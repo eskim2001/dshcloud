@@ -546,6 +546,13 @@
 
 ## D28 · 容器内沙箱：装 bubblewrap 让能力可用，模式交给用户
 
+> ⚠️ **2026-09-16 复测：bwrap 那一档在容器里起不来。** 真机（Debian 13、dockerd 29.8.0，runc / runsc
+> 两个运行时）与开发机（三种权限配置）都试过，报错一律落在**建命名空间**。所以这条「装 bwrap 让沙箱
+> 可用」**没有兑现**：生产 Linux 上真正兜住的是**下一档 Landlock**（ABI 6），开发机（内核仍没有
+> Landlock）**两档全灭**——那台机器上只有不经沙箱的档位能跑命令。决策本身（装 bwrap、且不替用户
+> 选模式）没变，但**别把 bwrap 当保障**。见 [RUNTIME-CONTAINER-EVAL](RUNTIME-CONTAINER-EVAL.md)
+> 的「订正（2026-09-16）」。
+
 - **决策**：实例镜像装 `bubblewrap`（构建时剥掉 setuid 位），让 dsh 的 Linux 进程沙箱
   后端可用；**平台不注入 `DSH_PERMISSION_MODE`**（或任何等价手段）去决定沙箱模式——
   用哪一档、什么时候切，是用户在 dsh 会话里的选择。
@@ -569,8 +576,8 @@
   那条边界仍是容器（D1）。
 - **重审**：宿主内核开始带 Landlock 时（可以去掉 bwrap 这档，留着也无害）；或 dsh 改了
   候选链语义时。
-- **补充**：装 bwrap 只是**必要条件**。光装它，探测仍会失败——Docker 默认的
-  masked/readonly 路径挡着 bwrap 建 proc，见 D30。
+- **补充**：装 bwrap 只是**必要条件**，而且实测这一档在容器里起不来（见本条开头那个 ⚠️）——
+  下面 D30 那套「清掉 masked/readonly 屏蔽就能让 bwrap 工作」今天也不成立。
 
 ## D29 · 卷内属主只能在平台侧落地（容器内降不了权）
 
@@ -606,14 +613,15 @@
 
 ## D30 · 覆盖 Docker 默认路径屏蔽：清掉 `/proc` 下的条目，bwrap 才建得起 proc
 
-> ⚠️ **这条的决策没有实现。** 驱动里找不到 `MaskedPaths` / `ReadonlyPaths` —— 它随切 microVM 那轮
-> 一起丢了（同 D29 开头那条）。实测（2026-09-13）对一个运行中的实例 `docker inspect`：容器拿到的是
-> Docker 的**默认**屏蔽表，含 `/proc/asound`、`/proc/kcore`、`/proc/keys` 等那批。
-> 后果是同一天实测出来的：容器里跑
-> `bwrap --ro-bind / / --dev /dev --unshare-pid --proc /proc --die-with-parent -- true`，
-> 返回 `Creating new namespace failed: Operation not permitted`（退出码 1）—— **这个问题又回来了**，
-> 连 D28 的前提（bwrap 可用）都不成立。注意报错落在**建 namespace** 而不是挂 proc，与下面矩阵里的
-> 现象不完全一样，而且本机是 Docker Desktop；**原生 Linux 待验**。下面的矩阵是当时的记录。
+> ⚠️ **这条的决策没有实现，而且它的根因今天不成立。** 驱动里现在**设了** `MaskedPaths`，但设的是
+> **Docker 默认那份 + `/proc/interrupts` + `/sys/devices/virtual/dmi`** —— 目的是多遮一条 DMI
+> （宿主是不是虚拟机、机型），与这条的意图（放开 `/proc` 下的条目、让 bwrap 建得起 proc）**相反**；
+> `ReadonlyPaths` 仍未设，驱动拿到的是 Docker 默认那 5 条（见 [ARCHITECTURE §五](ARCHITECTURE.md)）。
+> 根因也不成立：2026-09-16 在真机（runc / runsc）与开发机（root、uid 1000、`--cap-drop=ALL` 三种）
+> 上重测，bwrap 的失败点**一律落在建命名空间**，没有一次走到挂 proc —— 与这条开头 2026-09-13
+> 那条记录一致（`Creating new namespace failed: Operation not permitted`）。**下面的矩阵是当时那台
+> 开发机上的记录，不是 Docker 的通用行为，别照它去改驱动。** 见
+> [RUNTIME-CONTAINER-EVAL](RUNTIME-CONTAINER-EVAL.md) 的「订正（2026-09-16）」。
 
 - **决策**：容器 HostConfig 显式写死 `MaskedPaths: ['/sys/firmware']` 与
   `ReadonlyPaths: ['/sys/devices/virtual/powercap']` —— 即从 Docker 的默认列表里**去掉
@@ -646,9 +654,9 @@
   `/proc/bus`、`/proc/fs`、`/proc/irq` 那几条只读保护同样因非 root 而不可写。这层是
   纵深防御，不是跨实例边界——边界仍是容器（D1），内核残余风险本就已接受（§四）。
 - **重审**：宿主内核开始带 Landlock 时（bwrap 那档可以退场，屏蔽可以加回来）；或 dsh 改了
-  bwrap profile args（不再要求新 PID namespace 时）。**另需在原生 Linux Docker 上复验一次**
-  ——默认 masked/readonly 列表是 Docker 通用行为，预期生产同样需要这处改动，但本机只在
-  Docker Desktop 上验过。
+  bwrap profile args（不再要求新 PID namespace 时）。**原生 Linux 上复验过了（2026-09-16）**：
+  不需要这处改动 —— bwrap 在容器里根本起不来，与 masked/readonly 列表无关；生产上真正兜住
+  沙箱的是 **Landlock 那一档**（见本条开头那个 ⚠️）。
 
 ## D31 · 删除就是删除：数据真删，主机名留给原 owner
 
@@ -831,7 +839,10 @@
   （否 —— 见 D33 备选①）；④ 每实例一个自定义 bridge 网络（**采用**）。
 - **代价**：① **网络数 = 实例数**，而默认地址池分不了几个网络 —— 实测（2026-09-15）
   在 Docker Desktop 28.0.1 上**只够 12 个**，第 13 个回
-  `all predefined address pools have been fully subnetted`；真机（Linux）上还没量过。
+  `all predefined address pools have been fully subnetted`；Linux 真机（dockerd 29.8.0、没配
+  `default-address-pools`）2026-09-15 量到的是**池子共 15 个 /16**（172.17–172.31，每个自建网络
+  吃一整个 /16，从 172.18 起逐个分配）—— 换成 `size: 24` 之后是几千个（照做步骤见
+  [SECURITY-HARDENING](SECURITY-HARDENING.md)）。
   所以这条失败路径必须可读：`networkCreateError` 保留 daemon 原文，再补一句改
   `default-address-pools` 的 `size` 的照做动作。**安装脚本不自动改 `daemon.json`** ——
   那要动宿主 Docker 的配置并重启它，为一件还没撞上的事不值；② 每个网络多占一个子网、一个网关地址

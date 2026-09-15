@@ -9,6 +9,7 @@ import type Docker from 'dockerode'
 import type { InstanceSpec, RenderContext, RenderedInstance } from '@dsh-cloud/instance-spec'
 import { MACHINE_PREFIX, networkName, renderInstance } from '@dsh-cloud/instance-spec'
 import { createDocker, demuxFrames, isNotFound, isNotModified } from '../../docker/client.js'
+import { LXCFS_FILES } from './lxcfs.js'
 import {
   ProjectRegistry,
   assertStorageKey,
@@ -37,6 +38,11 @@ export interface DockerDriverOptions {
   pool?: StoragePool
   /** 跑辅助容器（`du` / `cp`）用的镜像。**只有命名卷那条退路还在用。** */
   helperImage?: string
+  /**
+   * 宿主上 lxcfs 的 `proc` 目录（`detectLxcfsProc` 的产物）。**省略 = 宿主没有 lxcfs** ——
+   * 实例容器不挂那几个假文件，`/proc` 照旧透传宿主值。缺席是常态，见 `lxcfs.ts`。
+   */
+  lxcfsProcDir?: string
 }
 
 /**
@@ -50,7 +56,9 @@ export interface DockerDriverOptions {
  *   （`docker/compose/local.yml` 里写着 Traefik 走 `host.docker.internal:<hostPort>`），
  *   所以这里发布 `127.0.0.1:<hostPort> -> <guestPort>`；
  * - `/data` 是**池子里的一个目录 + 一个 XFS project ID**（硬限额），删容器不删目录 → 实例重建不丢数据；
- *   没有池子时（开发机）退回命名卷，那种情况**没有硬限**，见 `createStorage`。
+ *   没有池子时（开发机）退回命名卷，那种情况**没有硬限**，见 `createStorage`；
+ * - 宿主装了 lxcfs 时，容器里的 `/proc/{meminfo,uptime,swaps}` 换成 lxcfs 的假文件，**藏住宿主的内存
+ *   大小这类形状**（哪些真藏得住、哪些藏不住都逐个量过，见 `lxcfs.ts`）；没装就一个都不挂。
  *
  * 和上一个运行时（microVM）比，三处约束**松掉了**，别把旧的绕法搬过来：
  * 1. Docker 的 `create` 之后 `start` 就会跑镜像的 ENTRYPOINT —— 不需要"补一次 exec 才开机"。
@@ -65,12 +73,14 @@ export class DockerDriver implements RuntimeDriver {
   private readonly helperImage: string
   private readonly pool: StoragePool | undefined
   private readonly registry: ProjectRegistry | undefined
+  private readonly lxcfsProcDir: string | undefined
 
   constructor(opts: DockerDriverOptions = {}) {
     this.docker = opts.docker ?? createDocker()
     this.helperImage = opts.helperImage ?? 'alpine'
     this.pool = opts.pool
     this.registry = opts.pool === undefined ? undefined : new ProjectRegistry(opts.pool.root)
+    this.lxcfsProcDir = opts.lxcfsProcDir
   }
 
   /** 有没有**真的**硬配额。false = 走命名卷退路（开发机）。 */
@@ -86,6 +96,18 @@ export class DockerDriver implements RuntimeDriver {
   /** 一个 key 在池子里的目录。**宿主路径不进 spec**（spec 只带不透明的 key）。 */
   private dirOf(key: string): string {
     return join(this.poolRoot, key)
+  }
+
+  /**
+   * lxcfs 那几个假文件的挂载项（`<宿主>/proc/<f>` → `/proc/<f>`，只读）。宿主的那个路径由
+   * **daemon** 解析，控制面只是把字符串传过去 —— 所以控制面看不见它也不影响挂载，探测只是为了
+   * 知道**该不该**挂：源不存在时 Docker 会把它建成一个**目录**，而 `/proc/meminfo` 是文件，
+   * 于是容器**起不来**（`not a directory`，2026-09-16 实测）—— 比不挂糟得多。
+   */
+  private procBinds(): string[] {
+    const dir = this.lxcfsProcDir
+    if (dir === undefined) return []
+    return LXCFS_FILES.map((f) => `${dir}/${f}:/proc/${f}:ro`)
   }
 
   // ---------------- 镜像 ----------------
@@ -450,9 +472,14 @@ export class DockerDriver implements RuntimeDriver {
         },
         // 池化形态挂宿主目录（`<pool>/<key>`）；没有池子时挂命名卷 —— Docker 两者共用同一套
         // `Binds` 语法，区别只在左边是路径还是卷名。
-        Binds: r.mounts.map(
-          (m) => `${this.enforced ? this.dirOf(m.storageKey) : m.storageKey}:${m.guest}:${m.mode}`,
-        ),
+        Binds: [
+          ...r.mounts.map(
+            (m) => `${this.enforced ? this.dirOf(m.storageKey) : m.storageKey}:${m.guest}:${m.mode}`,
+          ),
+          ...this.procBinds(),
+        ],
+        // 宿主指纹的另一半（lxcfs 管不了的那半）：DMI。见 MASKED_PATHS 的注释。
+        MaskedPaths: MASKED_PATHS,
         // 资源上限来自**渲染结果**（不回去翻 spec）：机器定义里有什么，这里就落什么。
         Memory: r.memoryMb * 1024 * 1024,
         NanoCpus: r.cpus * 1e9,
@@ -658,13 +685,40 @@ function networkCreateError(name: string, err: unknown): Error {
   // 一个实例一个网络 → 网络数 = 实例数，地址池用尽是迟早的事（默认池能分的网络数很少）。
   const hint = /fully subnetted|address pool/i.test(raw)
     ? '\n→ Docker 的地址池用完了。在 /etc/docker/daemon.json 里把 default-address-pools 的 size 调小' +
-      '（例如 {"base":"172.17.0.0/12","size":26}，按 /26 切就是 16384 个）再重启 docker。'
+      '（例如 {"base":"172.16.0.0/12","size":24}，按 /24 切就是 4096 个）再重启 docker。'
     : ''
   return new Error(`建实例网络 ${name} 失败：${raw}${hint}`)
 }
 
 /** `docker stop` 的宽限期（秒）：够 dsh 把会话落盘。 */
 const STOP_TIMEOUT_SECONDS = 10
+
+/**
+ * `HostConfig.MaskedPaths` 的**完整**列表 —— 设了它就是**整份替换** Docker 的默认遮罩，
+ * 所以前 12 条必须原样抄着，否则等于悄悄把 `/proc/kcore`、`/sys/firmware` 这些又敞开。
+ * 抄的是真机 dockerd 29.8.0 的默认值（12 条）；开发机那个 daemon 的默认少一条
+ * `/proc/interrupts`（11 条）—— 即**默认表本身就随 daemon 版本变**，所以不能只靠"不设就是默认"。
+ * 最后一条是本驱动加的。
+ *
+ * 加 `/sys/devices/virtual/dmi` 的理由：那下面写着宿主是不是虚拟机、机型是什么（`product_name`
+ * 实测报 `KVM`），实例读一眼就能给宿主归类 —— 它是**宿主全局**的，跟 `/proc/meminfo` 同一类问题。
+ * 实证：遮掉之后容器里这个目录直接不存在；**换 gVisor 也照样漏**，所以这条与运行时选择无关。
+ */
+const MASKED_PATHS = [
+  '/proc/acpi',
+  '/proc/asound',
+  '/proc/interrupts',
+  '/proc/kcore',
+  '/proc/keys',
+  '/proc/latency_stats',
+  '/proc/sched_debug',
+  '/proc/scsi',
+  '/proc/timer_list',
+  '/proc/timer_stats',
+  '/sys/devices/virtual/powercap',
+  '/sys/firmware',
+  '/sys/devices/virtual/dmi',
+]
 
 /** 探活的 TCP 超时。入口转发是本地回环，超过这个数就是没起来。 */
 const PROBE_TIMEOUT_MS = 2000

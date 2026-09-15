@@ -19,6 +19,7 @@ import { reconcileInstances } from './instance/reconciler.js'
 import { syncRoutesFromInstances } from './instance/routes-sync.js'
 import { ensureStoragePool } from './instance/pool.js'
 import { DockerDriver } from './runtime/docker/driver.js'
+import { LXCFS_FILES, detectLxcfsProc } from './runtime/docker/lxcfs.js'
 
 const parsed = loadEnv()
 const { db } = createDb(parsed.DATABASE_URL)
@@ -48,8 +49,15 @@ if (!pool.enforced) {
   )
 }
 
+// 宿主指纹：宿主装了 lxcfs 时，把它的假文件挂进实例容器，盖掉 `/proc` 里那几个**宿主全局**的数字
+// （内存大小、启动时长、swap 设备）。**探测只在启动时做一次**；缺席是常态，没装的宿主上什么都不做。
+const lxcfsProcDir = await detectLxcfsProc()
+if (lxcfsProcDir !== null) {
+  console.log(`proc 加固：宿主有 lxcfs，实例容器会盖住 ${LXCFS_FILES.join(' / ')}`)
+}
+
 // 运行时驱动是**唯一**接触具体运行时的接口（见 runtime/driver.ts）。
-const driver = new DockerDriver({ pool })
+const driver = new DockerDriver({ pool, ...(lxcfsProcDir === null ? {} : { lxcfsProcDir }) })
 const orchestrator = new InstanceOrchestrator(driver, env.INSTANCE_IMAGE_REPO)
 // 数据卷是运行时的概念，原语在驱动上；DataStore 只留策略（见 instance/data-store.ts）。
 const dataStore = new DataStore({ driver })

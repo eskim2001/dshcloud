@@ -33,7 +33,11 @@ cookie，而是由控制台签一枚**短时、单实例、绑定 owner** 的 to
 
 运行时一度从 Docker 换成 microVM（那条 ADR 已删除），后来**又改回 Docker** —— 理由与代价见
 [ARCHITECTURE §四](ARCHITECTURE.md)。现状：实例就是 **Docker 容器**（镜像由 `docker/instance-image` 构建），
-`/data` 是 **Docker 命名卷**，桥端口**发布到宿主回环**。
+`/data` 在池化形态下是**宿主存储池上带项目配额的目录**（D18/D35），桥端口**发布到宿主回环**。
+
+> **2026-09-15 更正**：这句原写作「`/data` 是 **Docker 命名卷**」。池化形态下它不成立 ——
+> 那是池目录 + XFS project quota；命名卷只是**开发机没有池子时**的回退形态
+> （`DockerDriver.createStorage`，那种情况没有硬限）。
 
 当时立的规矩是「**换运行时必须重验隔离结论，不能继承**」。这条**已经重验**了（见 #4）：
 

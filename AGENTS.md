@@ -45,7 +45,8 @@ dsh-cloud/
 │   └── compose/         本地入口栈（local.yml）；生产栈是 prod.yml
 ├── scripts/
 │   ├── dev.mjs          本地一键起停
-│   └── install.sh       ★ 一键安装 / 升级 / 卸载（在宿主上以 root 跑）
+│   ├── install.sh       ★ 一键安装 / 升级 / 卸载（在宿主上以 root 跑）
+│   └── proc-hide.sh     宿主侧可选加固：装 lxcfs，挡住实例里几个 /proc 的宿主全局数字
 └── docs/                架构 / 决策 / 待验证
 ```
 

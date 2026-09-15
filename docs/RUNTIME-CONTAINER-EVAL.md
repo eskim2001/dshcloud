@@ -226,21 +226,22 @@ microVM 要求宿主有 KVM，云上还得挑支持嵌套虚拟化的机型（AW
 
 这条单独说，因为它是「dsh 到底能不能干活」的前提。
 
-dsh 的沙箱候选链是 `bwrap → Landlock → 全部失败就拒绝执行任何命令`。它的 bwrap 参数，从镜像里的 `@deepseek-ai/dsh-sandbox-local` 读出来是：
+dsh 的沙箱候选链是 `bwrap → Landlock → 全部失败就拒绝执行任何命令` —— 这句在**镜像里那个包**里逐条对过（`@deepseek-ai/dsh-sandbox-local` 的 `PLATFORM_CHAINS`：Linux 是 `["bwrap", "landlock"]`；逐档**功能探测**，全灭抛 `SandboxUnavailableError`，它自己的注释写的是 "the command never runs"）。它的 bwrap 参数是：
 
 ```
 --ro-bind / /  --dev /dev  --unshare-pid  --proc /proc  --die-with-parent
 （workspace-write 模式再加 --tmpfs /tmp 和 --bind <workspace> <workspace>）
 ```
 
-两种运行时下各有一档能兜住：
+**2026-09-16 同一台真机（Debian 13、dockerd 29.8.0）、同一个实例镜像、两个运行时各测一遍**：
 
-| | bwrap | Landlock |
-|---|---|---|
-| 默认 runtime（runc） | 不可用。Docker 默认不给非特权 user namespace（`unshare -U` 直接 EPERM，跟 bwrap 无关） | 可用（ABI 6） |
-| gVisor | 可用。dsh 的真实参数逐项跑通 | 不可用（gVisor 没实现，errno 38 = ENOSYS） |
+| | bwrap | Landlock | 链的结论 |
+|---|---|---|---|
+| 默认 runtime（runc） | 不可用。三组参数都停在 `Creating new namespace failed: Operation not permitted`（`unshare -U` 同样 EPERM） | 可用（ABI **6**） | 走得通，靠 Landlock 那一档 |
+| gVisor（runsc） | 不可用。同样的报错；只留 `--ro-bind` 时是 `Failed to make / slave: Operation not permitted`（这里 `unshare -U` 是通的，bwrap 照样起不来） | 不可用（gVisor 没实现，errno 38 = ENOSYS） | **两档全灭 → 拒绝执行任何命令** |
 
-所以两边都能执行命令。gVisor 那一格顺带说明：**dsh 的 bwrap 参数里不能加 `--unshare-net`**，加了会失败在 `loopback: Failed RTM_NEWADDR`（gVisor 不支持那个 netlink 调用）——好在它本来也没用。
+也就是说 gVisor 挡住的不是性能，是**这一层**：它接不了 dsh 的进程沙箱，装上去实例里的命令一条都跑不了。
+上一版这张表里 gVisor 那格写的是「bwrap 可用」，是错的，见文末「订正（2026-09-16）」。
 
 ### 性能
 
@@ -254,6 +255,8 @@ dsh 的沙箱候选链是 `bwrap → Landlock → 全部失败就拒绝执行任
 | 本地解包约 850 个小文件 | 32 ms | 176 ms | 5.5 |
 
 前三行是可接受的量级。最后一行值得注意：gVisor 的系统调用开销在「大量小文件的本地 I/O」上被放大到 5.5 倍。绝对值不大（亚秒），但这是 dsh 的日常形态（`node_modules`、git、编译），会随工作量累积。
+
+2026-09-16 复测过一次（同一台机器，但上面已经有一套在跑的部署、四个实例在线，所以**绝对值不能和上表比，只看倍数**）：`npm install` 冷/热各一次，runc 4090 / 1659 ms、gVisor 7302 / 4049 ms —— 1.8 / 2.4 倍；从 `docker run` 到入口 HTTP 答话 12.9 s 对 20.5 s（1.6 倍，这段里 dsh 自己的启动占大头，两个运行时都要等它）。量级和上表一致：够用，但每一档都比 runc 慢一截。
 
 ## 还没验的
 
@@ -327,3 +330,28 @@ dsh 的沙箱候选链是 `bwrap → Landlock → 全部失败就拒绝执行任
 返回 `Creating new namespace failed: Operation not permitted`（退出码 1）。也就是说 D28 装的
 bubblewrap 沙箱在这套配置下**用不了**，D30 想修的那个问题重新出现了 —— 但这条只在
 Docker Desktop 上测过，原生 Linux 待验。
+
+## 订正（2026-09-16）
+
+**「gVisor 下 bwrap 可用」是错的，而那一格正是「gVisor 能不能用」的全部关键。** 重测见「运行 dsh 的
+进程沙箱」那张表：runsc 下 bwrap 与 Landlock **两档全灭**，按包里的 fail-closed 语义，
+dsh 在那个容器里**拒绝执行任何命令**（不是慢，是不能跑）。上一版的「可用。dsh 的真实参数逐项跑通」
+和跟着它推出来的「不能加 `--unshare-net`」一并作废 —— bwrap 在两个运行时下都走不到那个 netlink 调用。
+
+**链本身这次是从包里读的，不是从文档抄的。** `@deepseek-ai/dsh-sandbox-local`（实例镜像里）：
+Linux 链 `["bwrap", "landlock"]`，逐档功能探测，全灭抛 `SandboxUnavailableError`，
+注释原文 "the command never runs"。「原生 Linux 待验」这条也了结了：**2026-09-16 在真机上验过**，
+runc 下走 Landlock 那一档（ABI 6），实例里的命令照常能跑。
+
+**MaskedPaths 现在设上了，但不是 D30 那个设法。** 驱动里设的是
+**Docker 默认那份 + `/proc/interrupts` + `/sys/devices/virtual/dmi`** —— 目的是多遮一条 DMI
+（宿主是不是虚拟机、机型），**不是** D30 的「去掉 `/proc` 下的条目让 bwrap 建得起 proc」；
+`ReadonlyPaths` 仍未设。（默认那份表在两处 daemon 上就对不齐：开发机 11 条、真机 dockerd 29.8.0
+是 12 条，差一个 `/proc/interrupts` —— 所以它是**照抄一份写死的**，不依赖 daemon 版本。）
+
+**D30 的根因（masked/readonly 列表挡着 bwrap 建 proc）在今天的机器上不成立。** 重测里三组参数都停在
+**建命名空间**（`Creating new namespace failed` / `Failed to make / slave`），没有一个走到挂 proc。
+而且开发机（Docker Desktop，linuxkit 6.10.14）今天**两档全灭**：`CONFIG_SECURITY_LANDLOCK is not set`
+（errno 38），bwrap 也起不来 —— root、uid 1000、uid 1000 + `--cap-drop=ALL` 三种都一样；
+`--privileged` 下可以，只 `--unshare-user` 也可以。所以那台机器上的 dsh 只有
+**不经沙箱的档位**能跑命令（探测层的事实；真会话里没跑过命令，没验）。

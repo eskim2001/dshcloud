@@ -54,6 +54,10 @@ services:
       # **同路径** bind：实例容器里的 `/data` 是控制面传过去的宿主路径，
       # 由 daemon 在宿主上解析。两边路径不一致的话，实例会挂到一个空目录上。
       - ${HOST_STORAGE_ROOT:-/var/lib/dsh}:${HOST_STORAGE_ROOT:-/var/lib/dsh}
+      # lxcfs 的假 `/proc` 文件。**同路径**只读 bind，理由同上一行：控制面得**看得见**它才知道
+      # 该不该把它挂进实例（探测在启动时做一次，见 runtime/docker/lxcfs.ts）。宿主没装 lxcfs 时
+      # Docker 会把源建成一个空目录 —— 无害，探测因此缺席。
+      - /var/lib/lxcfs:/var/lib/lxcfs:ro
       # 控制面写、Traefik 读（TRAEFIK_ROUTES_PATH）。两边都是这个容内路径。
       - ./traefik/dynamic:/etc/traefik/dynamic
       # **设备节点**：`xfs_quota` 要打开的是**设备**（`/dev/loop1` 之类），不是挂载点。

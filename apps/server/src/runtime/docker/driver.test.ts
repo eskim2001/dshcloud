@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type Docker from 'dockerode'
 import type { InstanceSpec, RenderContext } from '@dsh-cloud/instance-spec'
-import { DockerDriver } from './driver.js'
+import { DockerDriver, type DockerDriverOptions } from './driver.js'
 
 const SPEC: InstanceSpec = {
   slug: 'alice',
@@ -29,7 +29,7 @@ function notFound(): Error {
 /** 建容器时我们真正读的那几个字段。 */
 interface CreateArgs {
   name: string
-  HostConfig?: { NetworkMode?: string }
+  HostConfig?: { NetworkMode?: string; Binds?: string[]; MaskedPaths?: string[] }
 }
 
 interface FakeOptions {
@@ -110,8 +110,11 @@ function fakeDocker(opts: FakeOptions = {}) {
 }
 
 /** 没有池子 = 命名卷退路（开发机形态），建实例时不用碰宿主文件系统。 */
-function driverOf(f: ReturnType<typeof fakeDocker>): DockerDriver {
-  return new DockerDriver({ docker: f.docker, helperImage: 'alpine' })
+function driverOf(
+  f: ReturnType<typeof fakeDocker>,
+  opts: DockerDriverOptions = {},
+): DockerDriver {
+  return new DockerDriver({ docker: f.docker, helperImage: 'alpine', ...opts })
 }
 
 describe('DockerDriver 的网络隔离', () => {
@@ -202,5 +205,38 @@ describe('DockerDriver 的网络隔离', () => {
 
     expect(await driver.storageUsageMb('vol-alice')).toBe(123)
     expect(f.lastCreate()?.HostConfig?.NetworkMode).toBe('none')
+  })
+})
+
+describe('DockerDriver 的宿主指纹加固', () => {
+  it('宿主有 lxcfs：三个量过**真生效**的假文件挂进来，原有存储挂载不动', async () => {
+    const f = fakeDocker()
+    await driverOf(f, { lxcfsProcDir: '/var/lib/lxcfs/proc' }).create(SPEC, CTX)
+
+    // 列表是逐个文件量出来的（见 lxcfs.ts）—— 这里钉死，防它被"顺手补全"成 lxcfs 提供的全套
+    expect(f.lastCreate()?.HostConfig?.Binds).toEqual([
+      'vol-alice:/data:rw',
+      '/var/lib/lxcfs/proc/meminfo:/proc/meminfo:ro',
+      '/var/lib/lxcfs/proc/uptime:/proc/uptime:ro',
+      '/var/lib/lxcfs/proc/swaps:/proc/swaps:ro',
+    ])
+  })
+
+  it('宿主没有 lxcfs：一个 proc 挂载都不加（缺席是常态；源不存在时 Docker 会把那些文件顶成目录、容器起不来）', async () => {
+    const f = fakeDocker()
+    await driverOf(f).create(SPEC, CTX)
+
+    expect(f.lastCreate()?.HostConfig?.Binds).toEqual(['vol-alice:/data:rw'])
+  })
+
+  it('DMI 一律遮掉，且遮罩是**整份**给出、没把 Docker 默认那几条挤没', async () => {
+    const f = fakeDocker()
+    await driverOf(f).create(SPEC, CTX)
+
+    const masked = f.lastCreate()?.HostConfig?.MaskedPaths ?? []
+    expect(masked).toContain('/sys/devices/virtual/dmi')
+    // 设了 MaskedPaths 就是**替换**默认值：这两条是默认里的，漏一条就是悄悄放开一块
+    expect(masked).toContain('/proc/kcore')
+    expect(masked).toContain('/sys/firmware')
   })
 })

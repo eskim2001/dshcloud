@@ -42,8 +42,8 @@ function renderEnv(spec: InstanceSpec, ctx: RenderContext): string[] {
     `PATH=${DATA_ROOT}/.npm-global/bin:${DATA_ROOT}/.pnpm:/usr/local/bin:/usr/bin:/bin`,
     // Caddy 需要可写目录；**必须显式传** —— Caddyfile 里
     // `@no_gate not header {$DSH_GATE_HEADER} {$DSH_GATE_TOKEN}` 在变量为空时会
-    // 展开成 `not header`（参数缺失）→ 配置加载失败 → caddy 直接退出，
-    // 而 entrypoint 只 wait dsh，容器照样活着（静默坏）。
+    // 展开成 `not header`（参数缺失）→ 配置加载失败 → caddy 直接退出；
+    // entrypoint 两个进程都盯着（任一退出就停容器），所以症状是容器起不来，不是静默坏。
     `XDG_DATA_HOME=${DATA_ROOT}/.caddy/data`,
     `XDG_CONFIG_HOME=${DATA_ROOT}/.caddy/config`,
     `DSH_TRUSTED_HOSTS=${instanceHostname(spec.slug, ctx.baseDomain)}`,

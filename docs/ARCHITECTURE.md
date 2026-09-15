@@ -106,6 +106,13 @@
   于是宿主的 `ssh`、任何 `0.0.0.0` 监听都在实例的射程内。挡它只能靠宿主侧 INPUT 规则，**Docker 没有
   原生开关**（`gateway_mode=isolated` 必须配 `--internal`，而实例要出网装包，出网一起就没了）。
   `install.sh --harden-host` 把这件事做成了**可选的一步**、**默认不写** —— 它改的是宿主的防火墙
+- **`/proc` 里有一批宿主全局的数字**：内存总量、开机时长、负载、磁盘 IO、slab 与宿主共有
+  （`cpu.max` / `memory.max` 是例外 —— 每容器一份）。工作区读一眼就能指纹宿主（几核、多大内存、
+  哪天开的机），也能当**跨租户侧信道**（推断邻居的负载、宿主的重启）。宿主装了 lxcfs 能收掉一部分
+  （`meminfo` / `uptime` / `swaps`，**宿主侧可选**，见 [SECURITY-HARDENING](SECURITY-HARDENING.md)；
+  直接调 `sysinfo(2)` 的程序绕得开它，所以那是降低可读性、不是边界）；
+  `loadavg`（负载没有命名空间）、`cpuinfo`（按 cpuset 假，平台给的是 CPU 配额）、`stat` 的 `btime` 收不掉。
+  DMI（宿主是不是虚拟机、机型）由 `MaskedPaths` 遮掉 —— 它与 lxcfs 有无无关，两个运行时都漏
 
 **运行时接缝**：[`apps/server/src/runtime/driver.ts`](../apps/server/src/runtime/driver.ts) 是**唯一**
 接触具体运行时的接口；业务层（`provisioner` / `boot` / `reconciler` / `routes-sync`）不认识任何具体运行时。
@@ -121,7 +128,8 @@
 | 用户 | 工作负载跑 **root**（渲染器固定 `user: '0'`，镜像也是 `USER root`）。**没有**容器内降权这一步 —— 曾经的理由（卷归 root + 容器内降不了权）随 microVM 回退一起失效了，见 D29 |
 | rootfs | **可写**（D12：dsh 是编码 agent，装依赖是日常） |
 | PID 1 | 镜像里的 **tini**（agent 大量 spawn 子进程，必须收僵尸） |
-| 命名空间 / 内核 | **Docker 默认**：进程 / 挂载 / 网络命名空间独立，但**共享宿主内核**（逃逸即宿主失陷） |
+| 命名空间 / 内核 | **Docker 默认**：进程 / 挂载 / 网络命名空间独立，但**共享宿主内核**（逃逸即宿主失陷）。共享内核的直接后果之一：一批 `/proc` 数字是**宿主全局**的 —— 宿主装了 lxcfs 时，实例里挂上它的 `meminfo` / `uptime` / `swaps`（宿主侧可选，见 [SECURITY-HARDENING](SECURITY-HARDENING.md)）；`loadavg` / `cpuinfo` / `stat` 的 `btime` 盖不住 |
+| 屏蔽表 | `MaskedPaths` = Docker 默认那份（**照抄写死**；两个 daemon 上就不一样：开发机 11 条、真机 dockerd 29.8.0 是 12 条，差一个 `/proc/interrupts`）**+ `/sys/devices/virtual/dmi`**（DMI 写着宿主是不是虚拟机、机型）—— 设了它就是**整份替换**默认值，所以默认那份必须在驱动里抄全，并有用例守着。`ReadonlyPaths` 仍未设（Docker 默认那 5 条生效） |
 | capabilities | ⚠️ **没有 drop** —— 用 Docker 默认能力集（含 CHOWN / DAC_OVERRIDE / SETUID 等，不含 SYS_ADMIN） |
 | pids 限制 | `HostConfig.PidsLimit = spec.quota.pidsLimit`（默认 512）—— 2026-09-13 才真正接上：此前 schema 里有这个字段、界面上也能调，但驱动没往下带，**改了不生效** |
 | 内存 / CPU | `HostConfig.Memory` / `NanoCpus`（上限而非预留） |
@@ -130,9 +138,10 @@
 | `--privileged` | **没用**，也不该用（那等于宿主 root） |
 
 > **与 D29 / D30 冲突时以本表为准。** 那两条 ADR 写的是 microVM 回退**之前**的配置
-> （`CapDrop: ALL`、`no-new-privileges`、`MaskedPaths` / `ReadonlyPaths` 覆盖）—— 那三项在切回
-> Docker 时丢了，驱动现在一个都不设，容器拿到的是 Docker 默认能力集与默认屏蔽表。两条 ADR 开头
-> 各有一段说明，实测记录在 [RUNTIME-CONTAINER-EVAL](RUNTIME-CONTAINER-EVAL.md) 的「订正」。
+> （`CapDrop: ALL`、`no-new-privileges`、`MaskedPaths` / `ReadonlyPaths` 覆盖）。切回 Docker 时
+> `CapDrop` 与 `no-new-privileges` 丢了、现在也没设；`MaskedPaths` 自 2026-09-16 起重新设上
+> （默认 12 条 + DMI，见上表），`ReadonlyPaths` 仍未设。实测记录在
+> [RUNTIME-CONTAINER-EVAL](RUNTIME-CONTAINER-EVAL.md) 的「订正」。
 
 **不随运行时变的**：
 
