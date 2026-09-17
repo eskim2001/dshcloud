@@ -32,7 +32,7 @@ Docker 容器与宿主共享一个 Linux 内核。内核暴露 ~300+ 个系统�
 
 **对策只有两档**（且互斥于 Docker 默认运行时）：
 
-- **gVisor**（runsc）：用户态内核拦截系统调用，宿主内核只处理 ~20 个 syscall。
+- **gVisor**（runsc）：用户态内核拦截系统调用，宿主内核只面对一份明确枚举过的小调用面。
   本平台量过：**不能跑**——dsh 的沙箱链（bwrap / Landlock）在 runsc 下全灭
   （`EPERM` / `ENOSYS`），dsh 按 fail-closed 语义拒绝执行命令。
 - **microVM**（Kata Containers / Firecracker）：每容器一个独立内核，硬件边界。
@@ -78,10 +78,10 @@ Docker 的网络隔离有三个层次，各管不同的通道：
 
 每实例一份独立的数据目录（池子里的 `<pool>/<key>`），配额用文件系统级的 **XFS project quota**。
 
-**实测（2026-09-15/16，Debian 13）：**
-- 限 100 MB，灌 200 MB → 只写进 100 MB，`ENOSPC`
-- `df` 报配额不报宿主盘
-- inode 配额（限 1000）下第 1001 个文件创建失败
+**实测（2026-09-12，Debian 12 / 内核 6.1 / Docker 29，loopback XFS 池）：**
+- 限 256 MiB，灌 400 MiB → 只写进 256.0 MiB，然后 `ENOSPC`
+- `df` / `statfs` 报的是**配额**不是宿主盘（实测：租户目录 256.0 MiB，池子 4032 MiB）
+- 字节与 inode 双限（`bhard` + `ihard`），超限的创建同样被拒
 - 硬限拦在文件系统的分配路径上，容器内有多少 capability 都改不了
 
 **三个必须知道的要点：**
@@ -159,7 +159,7 @@ lxcfs 是**资源可见性工具**（官方定位：让容器里的 `free` / `to
 不是隔离机制。实测（2026-09-15/16）8 个假文件中只有 3 个真正生效
 （`meminfo` / `uptime` / `swaps`）。更关键的是：**直接调 `sysinfo(2)` 的程序
 根本不读 `/proc`**——实测同一个容器里 `/proc/meminfo` 报 2 GB、`/proc/uptime` 报 0.09 秒，
-而 `sysinfo(2)` 照样返回宿主的 8138036 kB 与 536750 秒。只有 gVisor 能拦截 `sysinfo(2)` 并返回容器值。
+而 `sysinfo(2)` 照样返回宿主的 8138036 kB 与 536750 秒 —— 在共享内核这个前提下，这一条没有遮蔽手段。
 
 **部署上两个实测过的坑**：
 
