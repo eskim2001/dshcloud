@@ -128,6 +128,8 @@ pnpm --filter @dsh-cloud/server test:security
 | 想了解 | 看 |
 |---|---|
 | 架构 + 安全模型 + 隔离边界 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 平台隔离需求 / 信任定位 / 升级路径 | [docs/ISOLATION-POSITIONING.md](docs/ISOLATION-POSITIONING.md) |
+| Docker 容器隔离通用参考 | [docs/CONTAINER-ISOLATION.md](docs/CONTAINER-ISOLATION.md) |
 | 为什么这么定（ADR） | [docs/DECISIONS.md](docs/DECISIONS.md) |
 | 待验证 / 待定 | [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md) |
 | 改 UI 前必读的视觉约束 | [docs/DESIGN-SYSTEM.md](docs/DESIGN-SYSTEM.md) |
