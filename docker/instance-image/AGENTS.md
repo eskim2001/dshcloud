@@ -114,8 +114,11 @@ function processLaunchToken(owner) {
 `@deepseek-ai/cordis-plugin-hmr` 在 `lib/index.js` 仍检查 `process.execArgv` 是否含 `--expose-internals`；
 缺则实例崩溃：`(@deepseek-ai/cordis-plugin-hmr): --expose-internals is required for HMR service`。
 
-entrypoint 已用 `NODE_OPTIONS=…--expose-internals` 注入（不改 `dsh web` CLI，也不走 `node $(command -v dsh)`），
-避免 pnpm bin 是 shell 脚本时的 SyntaxError。升 dsh 版本时再实测一次是否仍硬校验。
+`NODE_OPTIONS=…--expose-internals` **不可用**：Node 会直接拒绝
+（`node: --expose-internals is not allowed in NODE_OPTIONS`），dsh 起不来。
+entrypoint 改回 `node --expose-internals "$(command -v dsh)" web …`，把 flag 写进
+`process.execArgv`。前提是 npm 全局 bin 的 `dsh` 是指向 `.js` 的 symlink（不是 shell 包装）；
+镜像内可用 `readlink -f "$(command -v dsh)"` / `head -1` 核对。升 dsh 版本时再实测一次是否仍硬校验。
 
 ---
 

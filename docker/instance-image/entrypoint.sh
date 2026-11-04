@@ -16,10 +16,10 @@ done
 LOG=/tmp/dsh.log
 : > "$LOG"
 
-# cordis-plugin-hmr 仍硬校验 process.execArgv 含 --expose-internals（0.1.6-alpha.1 实测）
-export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--expose-internals"
-
-dsh web --patch /etc/platform/owns-host.yml \
+# cordis-plugin-hmr 硬校验 process.execArgv 含 --expose-internals（0.1.6-alpha.1 实测）。
+# NODE_OPTIONS 注入会被 Node 拒绝（`--expose-internals is not allowed in NODE_OPTIONS`），
+# 故改为 node 直启，把 flag 写进 execArgv。要求 $(command -v dsh) 指向 JS（npm bin symlink），不是 shell 包装。
+node --expose-internals "$(command -v dsh)" web --patch /etc/platform/owns-host.yml \
   --host 127.0.0.1 --port "$DSH_PORT" --no-open $TRUSTED > "$LOG" 2>&1 &
 DSH_PID=$!
 
