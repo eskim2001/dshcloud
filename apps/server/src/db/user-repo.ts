@@ -1,4 +1,5 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm'
+import type { UserResourceQuotas } from '../platform-caps.js'
 import type { Db } from './client.js'
 import { instance, session, user } from './schema.js'
 
@@ -17,8 +18,13 @@ export interface AdminUserRow {
   role: string
   banned: boolean
   banReason: string | null
-  /** NULL = 用平台默认上限。 */
+  /** NULL = 用平台默认个数上限。 */
   instanceQuota: number | null
+  /** 单实例资源封顶。NULL = 用平台 PLATFORM_MAX_*。 */
+  cpuQuota: number | null
+  memoryMbQuota: number | null
+  pidsQuota: number | null
+  diskMbQuota: number | null
   instanceCount: number
   createdAt: Date
 }
@@ -33,6 +39,10 @@ export async function listUsersWithInstanceCount(db: Db): Promise<AdminUserRow[]
       banned: user.banned,
       banReason: user.banReason,
       instanceQuota: user.instanceQuota,
+      cpuQuota: user.cpuQuota,
+      memoryMbQuota: user.memoryMbQuota,
+      pidsQuota: user.pidsQuota,
+      diskMbQuota: user.diskMbQuota,
       createdAt: user.createdAt,
       instanceCount: sql<number>`count(${instance.id})::int`,
     })
@@ -94,14 +104,50 @@ export async function findUserQuota(db: Db, userId: string): Promise<number | nu
   return rows[0]?.quota ?? null
 }
 
+/** 单实例资源封顶。用户不存在 → undefined（调用方回落平台，别当成「全是 null 的覆盖」以外的事）。 */
+export async function findUserResourceQuotas(
+  db: Db,
+  userId: string,
+): Promise<UserResourceQuotas | undefined> {
+  const rows = await db
+    .select({
+      cpuQuota: user.cpuQuota,
+      memoryMbQuota: user.memoryMbQuota,
+      pidsQuota: user.pidsQuota,
+      diskMbQuota: user.diskMbQuota,
+    })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1)
+  return rows[0]
+}
+
+/**
+ * 管理员改这个用户的配额。只写 patch 里出现的键——个数和四项资源可以分开保存，
+ * null 是「清掉个人覆盖」，不是「没传」。
+ */
+export interface UserQuotaPatch {
+  instanceQuota?: number | null
+  cpuQuota?: number | null
+  memoryMbQuota?: number | null
+  pidsQuota?: number | null
+  diskMbQuota?: number | null
+}
+
 export async function setUserQuota(
   db: Db,
   userId: string,
-  quota: number | null,
+  patch: UserQuotaPatch,
 ): Promise<boolean> {
+  const next: UserQuotaPatch & { updatedAt: Date } = { updatedAt: new Date() }
+  if (patch.instanceQuota !== undefined) next.instanceQuota = patch.instanceQuota
+  if (patch.cpuQuota !== undefined) next.cpuQuota = patch.cpuQuota
+  if (patch.memoryMbQuota !== undefined) next.memoryMbQuota = patch.memoryMbQuota
+  if (patch.pidsQuota !== undefined) next.pidsQuota = patch.pidsQuota
+  if (patch.diskMbQuota !== undefined) next.diskMbQuota = patch.diskMbQuota
   const rows = await db
     .update(user)
-    .set({ instanceQuota: quota, updatedAt: new Date() })
+    .set(next)
     .where(eq(user.id, userId))
     .returning({ id: user.id })
   return rows.length > 0

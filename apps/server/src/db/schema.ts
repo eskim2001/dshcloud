@@ -22,6 +22,15 @@ export const user = pgTable('user', {
    * 平台自己的字段，better-auth 不认——但同表存着最省事。
    */
   instanceQuota: integer('instance_quota'),
+  /**
+   * 该用户**单个**实例的资源上限。NULL = 用平台 `PLATFORM_MAX_*`。
+   * 与 `instanceQuota`（能开几个）分开：这里封的是一档实例的 CPU / 内存 / pids / 磁盘，
+   * 写入时不得高于平台封顶，生效时再取 min。
+   */
+  cpuQuota: real('cpu_quota'),
+  memoryMbQuota: integer('memory_mb_quota'),
+  pidsQuota: integer('pids_quota'),
+  diskMbQuota: integer('disk_mb_quota'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
 })

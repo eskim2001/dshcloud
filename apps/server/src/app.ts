@@ -21,6 +21,7 @@ import {
   countAdmins,
   findUserByEmail,
   findUserById,
+  findUserResourceQuotas,
   listInstancesWithOwner,
   listUsersWithInstanceCount,
   revokeUserSessions,
@@ -43,6 +44,7 @@ import {
 } from './invitation.js'
 import { createUserWithPassword } from './account.js'
 import { demoAccount, isPlatformHost, trustedOrigins, type Env } from './env.js'
+import { EMPTY_USER_RESOURCE_QUOTAS } from './platform-caps.js'
 import { registerAdminRoutes } from './http/admin-routes.js'
 import { expireLegacyCookies } from './http/legacy-cookies.js'
 import { registerForwardAuth } from './http/forward-auth-route.js'
@@ -297,6 +299,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     // 额度 = 个人覆盖 ?? 平台默认。列表页显示它，用户就不用撞墙才知道。
     readInstanceLimit: async (ownerId) =>
       (await findUserById(deps.db, ownerId))?.instanceQuota ?? deps.env.MAX_INSTANCES_PER_USER,
+    readResourceQuotas: async (ownerId) =>
+      (await findUserResourceQuotas(deps.db, ownerId)) ?? EMPTY_USER_RESOURCE_QUOTAS,
     getById: (id) => findInstanceById(deps.db, id),
     listContainerStates: () => deps.orchestrator.listInstanceStates(),
     readStats: (containerId) => deps.orchestrator.stats(containerId),
@@ -336,7 +340,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       return true
     },
     unban: (userId) => setUserBanned(deps.db, userId, false, null),
-    setQuota: (userId, quota) => setUserQuota(deps.db, userId, quota),
+    setQuota: (userId, patch) => setUserQuota(deps.db, userId, patch),
+    findOwnerResourceQuotas: async (id) => {
+      const row = await findInstanceById(deps.db, id)
+      if (row === undefined) return undefined
+      // owner 行理论上删不掉（外键 restrict）。真缺了就当没有个人覆盖，别把活实例 404 掉。
+      return (await findUserResourceQuotas(deps.db, row.ownerId)) ?? EMPTY_USER_RESOURCE_QUOTAS
+    },
     // 降级最后一名管理员 = 所有人都进不了管理台，只能靠 db:seed 恢复。
     // 查两次再写，两个管理员同时自降的窗口极窄，单运营者场景不值得上事务。
     setRole: async (userId, role) => {

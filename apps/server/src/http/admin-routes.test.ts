@@ -99,6 +99,12 @@ async function build(
     ban: async () => true,
     unban: async () => true,
     setQuota: async () => true,
+    findOwnerResourceQuotas: async () => ({
+      cpuQuota: null,
+      memoryMbQuota: null,
+      pidsQuota: null,
+      diskMbQuota: null,
+    }),
     setRole: async () => 'ok',
     setInstanceQuota: async () => true,
     findInstanceContainer: async () => null,
@@ -225,7 +231,18 @@ describe('平台管理面：管理员路径', () => {
     const { app } = await build(ADMIN)
     const res = await app.inject({ method: 'GET', url: '/api/admin/users' })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ users: [], maxInstancesPerUser: 3 })
+    expect(res.json()).toEqual({
+      users: [],
+      maxInstancesPerUser: 3,
+      platformCaps: {
+        maxCpus: 2,
+        maxMemoryMb: 2048,
+        maxPids: 512,
+        maxDiskMb: 10_240,
+        maxRunning: 3,
+        idleCullMinutes: 45,
+      },
+    })
   })
 
   it('不能封禁自己', async () => {
@@ -288,7 +305,77 @@ describe('平台管理面：管理员路径', () => {
       payload: { quota: null },
     })
     expect(res.statusCode).toBe(200)
-    expect(setQuota).toHaveBeenCalledWith('u-x', null)
+    expect(setQuota).toHaveBeenCalledWith('u-x', { instanceQuota: null })
+  })
+
+  it('用户列表回显每用户资源封顶', async () => {
+    const { app } = await build(ADMIN, {
+      listUsers: async () => [
+        {
+          id: 'u-x',
+          email: 'ada@example.com',
+          name: 'Ada',
+          role: 'user',
+          banned: false,
+          banReason: null,
+          instanceQuota: 2,
+          cpuQuota: 1,
+          memoryMbQuota: 1024,
+          pidsQuota: 256,
+          diskMbQuota: 5120,
+          instanceCount: 1,
+          createdAt: new Date(0),
+        },
+      ],
+    })
+    const res = await app.inject({ method: 'GET', url: '/api/admin/users' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().users[0]).toMatchObject({
+      instanceQuota: 2,
+      cpuQuota: 1,
+      memoryMbQuota: 1024,
+      pidsQuota: 256,
+      diskMbQuota: 5120,
+    })
+  })
+
+  it('每用户资源封顶：高于平台 → 400，不写库', async () => {
+    const setQuota = vi.fn(async () => true)
+    const { app } = await build(ADMIN, { setQuota })
+    const over = [
+      { cpuQuota: 4 },
+      { memoryMbQuota: 4096 },
+      { pidsQuota: 1024 },
+      { diskMbQuota: 20_480 },
+      { diskMbQuota: 64 },
+      { cpuQuota: 0 },
+    ]
+    for (const payload of over) {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/admin/users/u-x/quota',
+        payload,
+      })
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400)
+    }
+    expect(setQuota).not.toHaveBeenCalled()
+  })
+
+  it('每用户资源封顶：封顶内写入，null 表示清掉个人覆盖', async () => {
+    const setQuota = vi.fn(async () => true)
+    const { app } = await build(ADMIN, { setQuota })
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/users/u-x/quota',
+      payload: { cpuQuota: 1, memoryMbQuota: 1024, pidsQuota: 256, diskMbQuota: null },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(setQuota).toHaveBeenCalledWith('u-x', {
+      cpuQuota: 1,
+      memoryMbQuota: 1024,
+      pidsQuota: 256,
+      diskMbQuota: null,
+    })
   })
 
   it('改角色：角色原样透传给回调', async () => {
@@ -362,6 +449,41 @@ describe('平台管理面：管理员路径', () => {
   })
 
   it('改实例配额：实例不存在 → 404', async () => {
+    const setInstanceQuota = vi.fn(async () => true)
+    const { app } = await build(ADMIN, {
+      setInstanceQuota,
+      findOwnerResourceQuotas: async () => undefined,
+    })
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/instances/nope/quota',
+      payload: { cpus: 2, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 },
+    })
+    expect(res.statusCode).toBe(404)
+    expect(setInstanceQuota).not.toHaveBeenCalled()
+  })
+
+  it('改实例配额：超过 owner 的每用户封顶 → 400（即使仍低于平台）', async () => {
+    const setInstanceQuota = vi.fn(async () => true)
+    const { app } = await build(ADMIN, {
+      setInstanceQuota,
+      findOwnerResourceQuotas: async () => ({
+        cpuQuota: 1,
+        memoryMbQuota: null,
+        pidsQuota: null,
+        diskMbQuota: null,
+      }),
+    })
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/instances/i-x/quota',
+      payload: { cpus: 2, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(setInstanceQuota).not.toHaveBeenCalled()
+  })
+
+  it('改实例配额：旧的「回调返回 false」仍是 404', async () => {
     const { app } = await build(ADMIN, { setInstanceQuota: async () => false })
     const res = await app.inject({
       method: 'PATCH',

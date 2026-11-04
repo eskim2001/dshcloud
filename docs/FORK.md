@@ -50,4 +50,12 @@
 | `PLATFORM_MAX_RUNNING` | `3` | 全局同时 `running` 上限；**`0` = 不限制** |
 | `PLATFORM_IDLE_CULL_MINUTES` | `45` | 空闲回收分钟数；**`0` = 关闭** |
 
-本版只做**全局**资源封顶；每用户仍只有实例**个数**配额（`MAX_INSTANCES_PER_USER` / `user.instance_quota`），**未做**每用户资源封顶。
+资源有三层，从宽到严取更小的那个：
+
+| 层 | 存在哪 | 含义 |
+|---|---|---|
+| 平台封顶 | `PLATFORM_MAX_CPUS` / `MEMORY_MB` / `PIDS` / `DISK_MB` | 全站单实例硬顶。谁都不能越过 |
+| 每用户封顶 | `user.cpu_quota` / `memory_mb_quota` / `pids_quota` / `disk_mb_quota` | NULL = 用平台。管理员写入必须 ≤ 平台；生效值 = min(平台, 用户) |
+| 实例档位 | 创建或改配额时的 `cpus` / `memoryMb` / `pidsLimit` / `diskMb` | 这一档的具体数字，不得越过该用户的有效封顶 |
+
+个数配额仍是 `MAX_INSTANCES_PER_USER` / `user.instance_quota`，和上面的单实例资源封顶分开。用户自助创建与管理员改实例都会再裁到 owner 的有效封顶；同时 running / 空闲回收仍是全站的，不按用户收。

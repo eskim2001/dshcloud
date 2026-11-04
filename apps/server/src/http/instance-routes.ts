@@ -12,7 +12,12 @@ import {
   MaxRunningExceededError,
   SlugConfirmMismatchError,
 } from '../instance/provisioner.js'
-import { createBodySchema, platformCaps } from '../platform-caps.js'
+import {
+  createBodySchema,
+  effectiveInstanceCaps,
+  platformCaps,
+  type UserResourceQuotas,
+} from '../platform-caps.js'
 import { resolveRuntimeStatus, type ContainerStates } from '../instance/runtime-status.js'
 import type { LogStreamOptions } from './log-stream.js'
 import { LogsQuerySchema } from './log-stream.js'
@@ -50,6 +55,11 @@ export interface InstanceRouteDeps {
    * 列表页要把它显示成「2 / 3」—— 这是他自己的额度，不是内部数据；不知道额度就只能撞墙才知道。
    */
   readInstanceLimit(ownerId: string): Promise<number>
+  /**
+   * 这个用户的单实例资源封顶（NULL = 没有个人覆盖）。
+   * 列表和创建都用它跟平台取 min，前端裁档位读到的就是这份有效值。
+   */
+  readResourceQuotas(ownerId: string): Promise<UserResourceQuotas>
   getById(id: string): Promise<InstanceRow | undefined>
   /**
    * 全部容器的实时状态（一次 `docker ps -a`）。
@@ -172,12 +182,16 @@ export async function registerInstanceRoutes(
       const states = await liveStates(req)
       // 磁盘**一次读全**（逐行读是 N 次调用）；读不到就整体缺席，由前端显示"暂无数据"。
       const disks = await reqDiskAll(req)
+      const caps = effectiveInstanceCaps(
+        platformCaps(deps.env),
+        await deps.readResourceQuotas(req.userId!),
+      )
       return {
         instances: rows.map((r) => toPublicInstance(r, deps.env, states, disks?.get(r.storageKey))),
         // 连同额度一起给：列表页要显示「2 / 3」，别让用户撞上才知道
         maxInstances: await deps.readInstanceLimit(req.userId!),
-        // 平台资源封顶：创建表单据此裁选项，避免提交后再 400
-        platformCaps: platformCaps(deps.env),
+        // 字段名仍是 platformCaps：创建表单按它裁档。值是该用户的有效封顶（平台 ∩ 个人）。
+        platformCaps: caps,
       }
     })
 
@@ -195,7 +209,11 @@ export async function registerInstanceRoutes(
     })
 
     scope.post('/api/instances', async (req: AuthedRequest, reply) => {
-      const parsed = createBodySchema(platformCaps(deps.env)).safeParse(req.body)
+      const caps = effectiveInstanceCaps(
+        platformCaps(deps.env),
+        await deps.readResourceQuotas(req.userId!),
+      )
+      const parsed = createBodySchema(caps).safeParse(req.body)
       if (!parsed.success) {
         // 前端只显示 `error`——「参数不合法」在表单里帮不上忙，把第一条具体原因顶上去
         const [first] = parsed.error.issues

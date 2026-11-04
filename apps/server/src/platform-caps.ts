@@ -28,7 +28,55 @@ export function platformCaps(env: Env): PlatformCaps {
   }
 }
 
-/** 用户自助创建：在历史护栏与平台封顶之间取更紧的那档。 */
+/**
+ * 某个用户在单实例上的个人封顶。每一项 NULL = 不覆盖，回落平台。
+ * 个数上限（`instanceQuota`）不在这里——那是「能开几个」，不是一档的资源。
+ */
+export interface UserResourceQuotas {
+  cpuQuota: number | null
+  memoryMbQuota: number | null
+  pidsQuota: number | null
+  diskMbQuota: number | null
+}
+
+export const EMPTY_USER_RESOURCE_QUOTAS: UserResourceQuotas = {
+  cpuQuota: null,
+  memoryMbQuota: null,
+  pidsQuota: null,
+  diskMbQuota: null,
+}
+
+/**
+ * 这个用户创建 / 改档时真正生效的单实例封顶。
+ *
+ * 用户字段为 null 就用平台；有值则取更小的那个——库里就算写进了高于平台的数，
+ * 也不能把平台封顶抬上去。`maxRunning` / `idleCullMinutes` 仍是全站的，不按用户收。
+ */
+export function effectiveInstanceCaps(
+  platform: PlatformCaps,
+  userQuotas: UserResourceQuotas | null | undefined,
+): PlatformCaps {
+  const user = userQuotas ?? EMPTY_USER_RESOURCE_QUOTAS
+  return {
+    ...platform,
+    maxCpus: user.cpuQuota === null ? platform.maxCpus : Math.min(platform.maxCpus, user.cpuQuota),
+    maxMemoryMb:
+      user.memoryMbQuota === null
+        ? platform.maxMemoryMb
+        : Math.min(platform.maxMemoryMb, user.memoryMbQuota),
+    maxPids:
+      user.pidsQuota === null ? platform.maxPids : Math.min(platform.maxPids, user.pidsQuota),
+    maxDiskMb:
+      user.diskMbQuota === null
+        ? platform.maxDiskMb
+        : Math.min(platform.maxDiskMb, user.diskMbQuota),
+  }
+}
+
+/**
+ * 用户自助创建：在历史护栏与传入封顶之间取更紧的那档。
+ * 调用方应传入 `effectiveInstanceCaps`（平台 ∩ 该用户），不要只传平台。
+ */
 export function createBodySchema(caps: PlatformCaps) {
   return z.object({
     // 保留字是**创建期命名政策**，只在这里生效——库里已有的行只做形状校验，
@@ -74,4 +122,31 @@ export function instanceQuotaBodySchema(caps: PlatformCaps) {
     pidsLimit: z.number().int().positive().max(Math.min(4_096, caps.maxPids)),
     diskMb: z.number().int().min(128).max(Math.min(1_048_576, caps.maxDiskMb)),
   })
+}
+
+/**
+ * 管理员改某个用户的个数配额和/或单实例资源封顶。
+ *
+ * `quota` 沿用旧字段名（个数，NULL = 平台默认个数）。资源四项同样 NULL = 清掉个人覆盖。
+ * 缺省的键不改库。资源项必须 ≤ 平台封顶——个人封顶是收紧，不是另开一道更高的门。
+ * 磁盘另有 128MB 下限：实例档位本身不允许更小，封顶写得比档位下限还低会让创建 schema 无解。
+ */
+export function userQuotaBodySchema(caps: PlatformCaps) {
+  return z
+    .object({
+      quota: z.number().int().min(0).max(100).nullable().optional(),
+      cpuQuota: z.number().positive().max(caps.maxCpus).nullable().optional(),
+      memoryMbQuota: z.number().int().positive().max(caps.maxMemoryMb).nullable().optional(),
+      pidsQuota: z.number().int().positive().max(caps.maxPids).nullable().optional(),
+      diskMbQuota: z.number().int().min(128).max(caps.maxDiskMb).nullable().optional(),
+    })
+    .refine(
+      (value) =>
+        value.quota !== undefined ||
+        value.cpuQuota !== undefined ||
+        value.memoryMbQuota !== undefined ||
+        value.pidsQuota !== undefined ||
+        value.diskMbQuota !== undefined,
+      { message: '至少要改一项' },
+    )
 }

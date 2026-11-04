@@ -108,6 +108,12 @@ async function build(
     },
     listMine: async () => [],
     readInstanceLimit: async () => 3,
+    readResourceQuotas: async () => ({
+      cpuQuota: null,
+      memoryMbQuota: null,
+      pidsQuota: null,
+      diskMbQuota: null,
+    }),
     getById: async () => undefined,
     // 单测里没有 Docker：默认让它失败，路由回退到 DB 快照（原断言不受影响）。
     // 实时状态的合并逻辑在 runtime-status.test.ts 里单测，这里只测「接得对不对」。
@@ -533,6 +539,46 @@ describe('实例面：创建', () => {
     expect(res.json().error).toMatch(/还没有默认镜像版本/)
   })
 
+  it('超过该用户有效封顶 → 400，不调 create（即使仍低于平台）', async () => {
+    const create = vi.fn()
+    const { app } = await build(ME, {
+      provisioner: { create },
+      readResourceQuotas: async () => ({
+        cpuQuota: 1,
+        memoryMbQuota: 1024,
+        pidsQuota: 256,
+        diskMbQuota: 5120,
+      }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      payload: { slug: 'alice', cpus: 2, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('落在该用户有效封顶内 → 放行', async () => {
+    const create = vi.fn(async (input: { slug: string }) => row({ slug: input.slug }))
+    const { app } = await build(ME, {
+      provisioner: { create },
+      readResourceQuotas: async () => ({
+        cpuQuota: 1,
+        memoryMbQuota: 1024,
+        pidsQuota: 256,
+        diskMbQuota: 5120,
+      }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      payload: { slug: 'alice', cpus: 1, memoryMb: 1024, pidsLimit: 256, diskMb: 5120 },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(create).toHaveBeenCalled()
+  })
+
   it('超过平台资源封顶 → 400，不调 create', async () => {
     const create = vi.fn()
     const { app } = await build(ME, { provisioner: { create } })
@@ -573,6 +619,26 @@ describe('实例面：创建', () => {
       maxDiskMb: 10_240,
       maxRunning: 3,
       idleCullMinutes: 45,
+    })
+  })
+
+  it('列表的 platformCaps 是当前用户的有效封顶', async () => {
+    const { app } = await build(ME, {
+      readResourceQuotas: async () => ({
+        cpuQuota: 1,
+        memoryMbQuota: null,
+        pidsQuota: 128,
+        diskMbQuota: null,
+      }),
+    })
+    const res = await app.inject({ method: 'GET', url: '/api/instances' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().platformCaps).toMatchObject({
+      maxCpus: 1,
+      maxMemoryMb: 2048,
+      maxPids: 128,
+      maxDiskMb: 10_240,
+      maxRunning: 3,
     })
   })
 

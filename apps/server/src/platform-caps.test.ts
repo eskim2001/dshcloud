@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Env } from './env.js'
-import { createBodySchema, instanceQuotaBodySchema, platformCaps } from './platform-caps.js'
+import {
+  createBodySchema,
+  effectiveInstanceCaps,
+  instanceQuotaBodySchema,
+  platformCaps,
+  userQuotaBodySchema,
+} from './platform-caps.js'
 
 const caps = platformCaps({
   PLATFORM_MAX_CPUS: 2,
@@ -27,6 +33,80 @@ describe('createBodySchema：平台封顶', () => {
     expect(createBodySchema(caps).safeParse({ slug: 'alice', memoryMb: 4096 }).success).toBe(false)
     expect(createBodySchema(caps).safeParse({ slug: 'alice', pidsLimit: 1024 }).success).toBe(false)
     expect(createBodySchema(caps).safeParse({ slug: 'alice', diskMb: 20_480 }).success).toBe(false)
+  })
+})
+
+describe('effectiveInstanceCaps', () => {
+  it('用户字段全 null → 原样用平台', () => {
+    expect(
+      effectiveInstanceCaps(caps, {
+        cpuQuota: null,
+        memoryMbQuota: null,
+        pidsQuota: null,
+        diskMbQuota: null,
+      }),
+    ).toEqual(caps)
+  })
+
+  it('每项取 min(平台, 用户)；没设的项保持平台', () => {
+    expect(
+      effectiveInstanceCaps(caps, {
+        cpuQuota: 1,
+        memoryMbQuota: null,
+        pidsQuota: 128,
+        diskMbQuota: 20_480,
+      }),
+    ).toMatchObject({
+      maxCpus: 1,
+      maxMemoryMb: 2048,
+      maxPids: 128,
+      maxDiskMb: 10_240,
+      maxRunning: 3,
+      idleCullMinutes: 45,
+    })
+  })
+})
+
+describe('userQuotaBodySchema：每用户封顶不得高于平台', () => {
+  it('封顶内（含 null = 恢复平台默认）放行', () => {
+    expect(
+      userQuotaBodySchema(caps).safeParse({
+        quota: 2,
+        cpuQuota: 1,
+        memoryMbQuota: null,
+        pidsQuota: 256,
+        diskMbQuota: 5120,
+      }).success,
+    ).toBe(true)
+  })
+
+  it('高于平台、磁盘低于档位下限、空 body → 拒绝', () => {
+    expect(userQuotaBodySchema(caps).safeParse({ cpuQuota: 4 }).success).toBe(false)
+    expect(userQuotaBodySchema(caps).safeParse({ memoryMbQuota: 4096 }).success).toBe(false)
+    expect(userQuotaBodySchema(caps).safeParse({ diskMbQuota: 64 }).success).toBe(false)
+    expect(userQuotaBodySchema(caps).safeParse({}).success).toBe(false)
+  })
+})
+
+describe('createBodySchema：传入的是有效封顶，不是只看平台', () => {
+  it('用户封顶更紧时，平台还允许的值也会被拒', () => {
+    const tight = effectiveInstanceCaps(caps, {
+      cpuQuota: 1,
+      memoryMbQuota: 1024,
+      pidsQuota: 256,
+      diskMbQuota: 5120,
+    })
+    expect(createBodySchema(tight).safeParse({ slug: 'alice', cpus: 2 }).success).toBe(false)
+    expect(createBodySchema(tight).safeParse({ slug: 'alice', memoryMb: 2048 }).success).toBe(false)
+    expect(
+      createBodySchema(tight).safeParse({
+        slug: 'alice',
+        cpus: 1,
+        memoryMb: 1024,
+        pidsLimit: 256,
+        diskMb: 5120,
+      }).success,
+    ).toBe(true)
   })
 })
 

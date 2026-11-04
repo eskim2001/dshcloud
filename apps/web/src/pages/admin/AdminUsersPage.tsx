@@ -8,6 +8,7 @@ import { CreateUserPanel } from '@/components/admin/create-user-panel.js'
 import { InvitePanel } from '@/components/admin/invite-panel.js'
 import { RoleButton } from '@/components/admin/role-button.js'
 import { UserQuotaEditor } from '@/components/admin/user-quota-editor.js'
+import { UserResourceCapsEditor } from '@/components/admin/user-resource-caps-editor.js'
 import { Badge } from '@/components/ui/badge.js'
 import { Button } from '@/components/ui/button.js'
 import {
@@ -18,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table.js'
-import { banUser, listAdminUsers, setUserQuota, setUserRole, unbanUser } from '@/lib/api.js'
+import { banUser, listAdminUsers, setUserQuota, setUserRole, unbanUser, type UserQuotaPatch } from '@/lib/api.js'
 import { errorTextOf } from '@/lib/error-text.js'
 import { keys } from '@/lib/query-keys.js'
 import { sessionKey, useSession } from '@/lib/use-session.js'
@@ -45,7 +46,7 @@ export default function AdminUsersPage() {
   })
   const unban = useMutation({ mutationFn: unbanUser, onSuccess: invalidateUsers })
   const quota = useMutation({
-    mutationFn: ({ id, value }: { id: string; value: number | null }) => setUserQuota(id, value),
+    mutationFn: ({ id, patch }: { id: string; patch: UserQuotaPatch }) => setUserQuota(id, patch),
     onSuccess: invalidateUsers,
   })
   const role = useMutation({
@@ -121,7 +122,13 @@ export default function AdminUsersPage() {
                         user={user}
                         fallback={users.data.maxInstancesPerUser}
                         pending={quota.isPending && quota.variables?.id === user.id}
-                        onSave={(value) => quota.mutate({ id: user.id, value })}
+                        onSave={(value) => quota.mutate({ id: user.id, patch: { quota: value } })}
+                      />
+                      <UserResourceCapsEditor
+                        user={user}
+                        caps={users.data.platformCaps}
+                        pending={quota.isPending && quota.variables?.id === user.id}
+                        onSave={(value) => quota.mutate({ id: user.id, patch: value })}
                       />
                     </TableCell>
                     <TableCell>
