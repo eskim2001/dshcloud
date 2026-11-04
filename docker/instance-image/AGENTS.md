@@ -33,8 +33,10 @@ docker run --rm --entrypoint sh dsh-check -c 'ls /usr/local/lib/node_modules/@de
 | 9 | `dsh --version` 输出格式 | `Dockerfile` 构建自检 | 构建失败（响亮） |
 | 10 | `node-pty` 仍是依赖、仍要编译 | `Dockerfile` 构建自检 | 构建失败（响亮） |
 | 11 | `dsh plugin` 转发给 pnpm | 镜像里有可用 pnpm 的理由 | 插件功能不可用 |
+| 12 | **`dsh-app-boot` 必须与 `DSH_VERSION` pin 同号**（嵌在 dsh 的 `node_modules` 内） | `Dockerfile.full` 的 npm pin + 自检；默认叠层 Dockerfile **不重装 npm** | 全量无 pin 重建会漂到 boot@alpha.2，缺 `watchUserPatches` → profile-boot SyntaxError（honcho `_3`） |
+| 13 | **caddy 必须卸掉 `cap_net_bind_service` filecap** | 叠层/`Dockerfile.full` 的 `/sbin/setcap -r` | 平台 `CapDrop:ALL` + `no-new-privileges` 下 `caddy: Operation not permitted`（honcho `_4`） |
 
-只有 #9 #10 有自动防线，**其余都得手工**。
+只有 #9 #10（及全量路径的 boot pin / setcap 自检）有自动防线，**其余都得手工**。
 
 ---
 
@@ -120,20 +122,41 @@ entrypoint 改回 `node --expose-internals "$(command -v dsh)" web …`，把 fl
 `process.execArgv`。前提是 npm 全局 bin 的 `dsh` 是指向 `.js` 的 symlink（不是 shell 包装）；
 镜像内可用 `readlink -f "$(command -v dsh)"` / `head -1` 核对。升 dsh 版本时再实测一次是否仍硬校验。
 
+### 修订号构建策略（0.1.6-alpha.1：`_5` 起）
+
+honcho 过夜热修演进（2026-11-05）：
+
+| tag | 做法 | 结果 |
+|---|---|---|
+| `_1` | 初装默认 | HMR 缺 `--expose-internals` 崩 |
+| `_2` | `NODE_OPTIONS=--expose-internals` | Node 拒绝 NODE_OPTIONS |
+| `_3` | 全量 rebuild + `node --expose-internals` | 依赖漂，`watchUserPatches` 崩 |
+| `_4` | **FROM `_1`** + 仅换 entrypoint | dsh 起得来；caddy EPERM |
+| **`_5`** | **FROM `_1` + entrypoint + 去 caddy filecap** | **稳定；业务 UI 200** |
+
+**结论**：`_5` ≡ `_1` + PR#6 entrypoint（`node --expose-internals "$(command -v dsh)" web …`）+ `/sbin/setcap -r` 卸 caddy 的 `cap_net_bind_service`。
+
+- **默认** `./build.sh` → `Dockerfile`（叠层，不重装 npm）。基座默认 `ghcr.io/eskim2001/dsh-instance:${DSH_VERSION}_1`。
+- **全量** `FULL=1 ./build.sh` → `Dockerfile.full`（npm 重装 + 在 dsh 树内 pin `dsh-app-boot@${DSH_VERSION}` + setcap）。升 dsh 主版本才走这条；同代热修勿默认全量。
+- **不要改**：entrypoint 的 `--host 127.0.0.1`、`$TRUSTED`、stdout token 抓取、caddy 8080 桥。
+
 ---
 
 ## 升级时怎么跑
 
 ```bash
-# 1. 改 VERSION 里的 dsh 版本号
-# 2. 构建（自检覆盖 #9 #10）
+# 1. 改 VERSION（同代热修只加修订号，如 0.1.6-alpha.1_5）
+# 2a. 同代热修：叠层（默认；不重装 npm）
 ./docker/instance-image/build.sh
-# 3. 手工过一遍假设表里其余那些
-docker run --rm --entrypoint sh <镜像> -c '<逐条查>'
+# 2b. 升 dsh 主版本：全量 + pin boot
+FULL=1 ./docker/instance-image/build.sh
+# 3. 手工过一遍假设表里其余那些（尤其 #12 #13）
+docker run --rm --entrypoint sh <镜像> -c 'getcap /usr/local/bin/caddy; readlink -f "$(command -v dsh)"'
 # 4. 真跑一个实例，浏览器里交互一遍
 docker run -d -p 18080:8080 -e DSH_TRUSTED_HOSTS=localhost:18080 <镜像>
 #    打开 http://localhost:18080/
 ```
 
-**第 4 步不能省。** 构建自检只证明「dsh 装上了、node-pty 能加载」，
-证明不了「页面能用」——`--expose-internals` 就是典型：带不带都能构建成功。
+**第 4 步不能省。** 叠层自检只证明「entrypoint 换上了、caddy 无 filecap」；
+全量自检只证明「dsh 装上了、boot pin 住了、node-pty 能加载」——都证明不了「页面能用」。
+`--expose-internals` / caddy EPERM / boot 漂依赖都是「构建绿、运行炸」的典型。

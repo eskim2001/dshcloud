@@ -1,0 +1,111 @@
+# syntax=docker/dockerfile:1.7
+#
+# 全量重建路径（FULL=1 ./build.sh）。生产同代热修请用默认 Dockerfile（FROM _1 叠层）。
+# 无 lock 装 @deepseek-ai/dsh@0.1.6-alpha.1 会漂到 dsh-app-boot@alpha.2（缺 watchUserPatches），
+# 故在 dsh 依赖树内 pin boot 到与 DSH_VERSION 同号，并自检。
+ARG DSH_VERSION
+ARG REVISION
+
+FROM node:24-trixie
+
+ARG DSH_VERSION
+ARG REVISION
+
+RUN : "${DSH_VERSION:?必须传 DSH_VERSION}" \
+ && : "${REVISION:?必须传 REVISION}"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bubblewrap tini libcap2-bin \
+ && chmod u-s /usr/bin/bwrap \
+ && rm -rf /var/lib/apt/lists/*
+
+# 先装 dsh，再在其 node_modules 内钉死同版本 boot（全局再装一份钉不住嵌套依赖）。
+RUN npm install --global --omit=dev --no-audit --no-fund \
+      --ignore-scripts=false \
+      "@deepseek-ai/dsh@${DSH_VERSION}" \
+ && cd "$(npm root -g)/@deepseek-ai/dsh" \
+ && npm install --omit=dev --no-audit --no-fund \
+      --ignore-scripts=false \
+      "@deepseek-ai/dsh-app-boot@${DSH_VERSION}" \
+ && npm cache clean --force
+
+RUN test "$(dsh --version)" = "${DSH_VERSION}" \
+ && cd "$(npm root -g)/@deepseek-ai/dsh" \
+ && node -e 'require("node-pty")' \
+ && EXPECTED="${DSH_VERSION}" node -e '
+      const fs = require("fs");
+      const path = require("path");
+      const expected = process.env.EXPECTED;
+      const bootPkg = path.dirname(require.resolve("@deepseek-ai/dsh-app-boot/package.json"));
+      const ver = JSON.parse(fs.readFileSync(path.join(bootPkg, "package.json"), "utf8")).version;
+      if (ver !== expected) {
+        console.error("dsh-app-boot pin 失败: resolved=" + ver + " expected=" + expected);
+        process.exit(1);
+      }
+      let found = false;
+      for (const f of fs.readdirSync(path.join(bootPkg, "lib"))) {
+        const p = path.join(bootPkg, "lib", f);
+        if (fs.statSync(p).isFile() && /watchUserPatches/.test(fs.readFileSync(p, "utf8"))) {
+          found = true; break;
+        }
+      }
+      if (!found) {
+        console.error("dsh-app-boot@" + ver + " 未找到 watchUserPatches（疑似漂到坏版本）");
+        process.exit(1);
+      }
+      console.log("boot pin ok:", ver);
+    ' \
+ && echo "自检通过"
+
+RUN corepack enable pnpm
+
+COPY --from=caddy:2.10-alpine /usr/bin/caddy /usr/local/bin/caddy
+
+# 平台 CapDrop:ALL + no-new-privileges 下，带 cap_net_bind_service=ep 的 caddy 会 EPERM。
+# bridge 听 8080，不需要该能力。libcap2-bin 已在首个 apt 层装过。
+RUN /sbin/setcap -r /usr/local/bin/caddy \
+ && test -z "$(getcap /usr/local/bin/caddy 2>/dev/null || true)" \
+ && apt-get purge -y libcap2-bin \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY owns-host.mjs owns-host.yml /etc/platform/
+
+# ARG + LABEL 故意放在这里，不要往上挪。
+# BUILD_TIME / GIT_SHA 每次构建都不同，而 build arg 会作废缓存、且失效点之后的
+# 指令全部重跑 —— 放文件开头的话，它们的 apt / npm install / 自检每一轮都要重来。
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+LABEL org.opencontainers.image.title="dsh-instance" \
+      org.opencontainers.image.version="${DSH_VERSION}_${REVISION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}" \
+      org.opencontainers.image.source="https://github.com/eskim2001/dsh-cloud"
+
+ENV DSH_HOME=/data \
+    HOME=/data/home \
+    DSH_PORT=3080 \
+    BRIDGE_PORT=8080 \
+    NPM_CONFIG_PREFIX=/data/.npm-global \
+    NPM_CONFIG_CACHE=/data/.npm \
+    PNPM_HOME=/data/.pnpm \
+    PNPM_STORE_DIR=/data/.pnpm-store \
+    COREPACK_HOME=/data/.corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    XDG_DATA_HOME=/data/.caddy/data \
+    XDG_CONFIG_HOME=/data/.caddy/config \
+    PATH=/data/.npm-global/bin:/data/.pnpm:/usr/local/bin:/usr/bin:/bin
+
+VOLUME ["/data"]
+WORKDIR /data
+
+# 必须是**运行用户**的（与 instance-spec 的 INSTANCE_UID 同一个号）。
+# 空卷第一次挂载时 Docker 会把镜像里 /data 的属主拷进卷里 —— 镜像里这个目录若是 root 的，
+# 平台在起容器前改好的属主会被当场顶回 root（2026-09-17 实测：镜像 /data=0:0 时，卷上先
+# chown 成 1000:1000 再挂一次，读回来又是 0:0），工作负载随即写不了盘。
+RUN chown 1000:1000 /data
+
+USER 1000:1000
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
