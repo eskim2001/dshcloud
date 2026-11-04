@@ -2,6 +2,7 @@ import { fromNodeHeaders } from 'better-auth/node'
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import cookie from '@fastify/cookie'
 import type { Auth } from './auth.js'
+import { authBridgeHeaders, canonicalAuthUrl } from './auth-bridge-headers.js'
 import type { Db } from './db/client.js'
 import {
   countRunningInstances,
@@ -260,15 +261,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   })
 
   // ② 认证端点（better-auth 自己处理登录/登出/会话）
+  // 限速键只用 Fastify 收好的 request.ip。客户端转发头原样透传就能换桶。
   app.route({
     method: ['GET', 'POST'],
     url: '/api/auth/*',
     handler: async (request, reply) => {
-      const url = new URL(request.url, `${deps.env.PUBLIC_SCHEME}://${request.headers.host}`)
-      if (decodeURIComponent(url.pathname).startsWith('/api/auth/admin/')) {
+      const url = canonicalAuthUrl(request.url, `${deps.env.PUBLIC_SCHEME}://${request.headers.host}`)
+      if (url === undefined) {
+        return reply.code(400).send({ error: 'Malformed request path' })
+      }
+      if (url.pathname.startsWith('/api/auth/admin/')) {
         return reply.code(403).send({ error: 'Platform account administration is not exposed here' })
       }
-      const headers = fromNodeHeaders(request.headers)
+      const headers = authBridgeHeaders(request.headers, request.ip)
       const init: RequestInit = { method: request.method, headers }
       if (request.body !== undefined && request.method !== 'GET') {
         init.body = JSON.stringify(request.body)
