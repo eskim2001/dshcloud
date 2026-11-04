@@ -6,11 +6,17 @@ import { AccountExistsError, canonicalLoginEmail } from '../account.js'
 import type { ImageCatalogRow, ImageReleaseRow } from '../db/schema.js'
 import type { InvitationRow } from '../db/invitation-repo.js'
 import { INVITE_TTL_HOURS } from '../invitation.js'
-import type { AdminInstanceRow, AdminUserRow } from '../db/user-repo.js'
+import type { AdminInstanceRow, AdminUserRow, UserQuotaPatch } from '../db/user-repo.js'
 import type { DiskUsed } from './instance-routes.js'
 import type { Env } from '../env.js'
 import type { QuotaInput } from '../instance/provisioner.js'
-import { instanceQuotaBodySchema, platformCaps } from '../platform-caps.js'
+import {
+  effectiveInstanceCaps,
+  instanceQuotaBodySchema,
+  platformCaps,
+  userQuotaBodySchema,
+  type UserResourceQuotas,
+} from '../platform-caps.js'
 import {
   compareImageRefs,
   imageRepo,
@@ -35,7 +41,6 @@ const CreateUserBodySchema = z.object({
   role: z.enum(['user', 'admin']).optional(),
 })
 const BanBodySchema = z.object({ reason: z.string().max(200).optional() })
-const QuotaBodySchema = z.object({ quota: z.number().int().min(0).max(100).nullable() })
 const RoleBodySchema = z.object({ role: z.enum(['user', 'admin']) })
 /** 邀请只按邮箱发：链接捡到了也得知道是发给谁的（见 db/invitation-repo.ts）。 */
 const InviteBodySchema = z.object({ email: z.string().trim().email().max(254) })
@@ -107,7 +112,12 @@ export interface AdminRouteDeps {
   listContainerStates(): Promise<ContainerStates>
   ban(userId: string, reason: string | null): Promise<boolean>
   unban(userId: string): Promise<boolean>
-  setQuota(userId: string, quota: number | null): Promise<boolean>
+  setQuota(userId: string, patch: UserQuotaPatch): Promise<boolean>
+  /**
+   * 实例 owner 的单实例资源封顶。实例不存在 → undefined。
+   * 全 null = 这个用户没有个人覆盖，有效封顶等于平台。
+   */
+  findOwnerResourceQuotas(instanceId: string): Promise<UserResourceQuotas | undefined>
   /** 授予 / 撤销管理员。`last-admin` = 降的是最后一名管理员，不能降（会自锁）。 */
   setRole(userId: string, role: 'user' | 'admin'): Promise<'ok' | 'missing' | 'last-admin'>
   /** 改实例的 CPU / 内存 / pids。实例不存在 → false。**会重建容器**（几秒中断）。 */
@@ -220,6 +230,8 @@ export async function registerAdminRoutes(
     scope.get('/api/admin/users', async () => ({
       users: await deps.listUsers(),
       maxInstancesPerUser: deps.env.MAX_INSTANCES_PER_USER,
+      // 用户页要拿它当「留空 = 这个数」的 hint，并挡住写得比平台还高的输入。
+      platformCaps: platformCaps(deps.env),
     }))
 
     scope.post('/api/admin/users', async (req, reply) => {
@@ -302,14 +314,21 @@ export async function registerAdminRoutes(
 
     scope.patch('/api/admin/users/:id/quota', async (req: AuthedRequest, reply) => {
       const { id } = req.params as { id: string }
-      const parsed = QuotaBodySchema.safeParse(req.body)
+      const caps = platformCaps(deps.env)
+      const parsed = userQuotaBodySchema(caps).safeParse(req.body)
       if (!parsed.success) {
         return reply.code(400).send({
           error: '参数不合法',
           issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
         })
       }
-      if (!(await deps.setQuota(id, parsed.data.quota))) {
+      const patch: UserQuotaPatch = {}
+      if (parsed.data.quota !== undefined) patch.instanceQuota = parsed.data.quota
+      if (parsed.data.cpuQuota !== undefined) patch.cpuQuota = parsed.data.cpuQuota
+      if (parsed.data.memoryMbQuota !== undefined) patch.memoryMbQuota = parsed.data.memoryMbQuota
+      if (parsed.data.pidsQuota !== undefined) patch.pidsQuota = parsed.data.pidsQuota
+      if (parsed.data.diskMbQuota !== undefined) patch.diskMbQuota = parsed.data.diskMbQuota
+      if (!(await deps.setQuota(id, patch))) {
         return reply.code(404).send({ error: '用户不存在' })
       }
       return { ok: true }
@@ -368,10 +387,17 @@ export async function registerAdminRoutes(
       return { ok: true }
     })
 
-    /** 改实例资源配额（D17）。会重建容器——前端要提示「有几秒不可用」。 */
+    /**
+     * 改实例资源配额（D17）。会重建容器——前端要提示「有几秒不可用」。
+     * 先按平台封顶，再收到 owner 的每用户封顶（更严的那边）。实例不存在时没有 owner，直接 404。
+     */
     scope.patch('/api/admin/instances/:id/quota', async (req: AuthedRequest, reply) => {
       const { id } = req.params as { id: string }
-      const parsed = instanceQuotaBodySchema(platformCaps(deps.env)).safeParse(req.body)
+      const ownerQuotas = await deps.findOwnerResourceQuotas(id)
+      if (ownerQuotas === undefined) return reply.code(404).send({ error: '实例不存在' })
+      const parsed = instanceQuotaBodySchema(
+        effectiveInstanceCaps(platformCaps(deps.env), ownerQuotas),
+      ).safeParse(req.body)
       if (!parsed.success) {
         return reply.code(400).send({
           error: '参数不合法',

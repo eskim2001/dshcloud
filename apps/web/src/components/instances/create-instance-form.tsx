@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button.js'
@@ -41,6 +41,17 @@ const MIN_PIDS_LIMIT = 128
 /** 历史自助上限；真正生效的是 min(这个值, platformCaps.maxPids)。 */
 const SELF_SERVE_MAX_PIDS = 4_096
 
+/**
+ * 预设档位里不超过 cap 的那些。全都高于 cap 时，退回 cap 本身——
+ * 否则个人封顶比最小预设还低时，下拉是空的，提交却还握着一个超限默认值。
+ */
+function choicesAtMost(presets: number[], cap: number, floor = 0): number[] {
+  const fitted = presets.filter((n) => n >= floor && n <= cap)
+  if (fitted.length > 0) return fitted
+  if (cap >= floor && cap > 0) return [cap]
+  return []
+}
+
 const FALLBACK_CAPS: PlatformCaps = {
   maxCpus: 2,
   maxMemoryMb: 2048,
@@ -71,14 +82,17 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
     queryKey: keys.instances,
     queryFn: listInstances,
     staleTime: 60_000,
+    // 服务端已经收成这个用户的有效封顶（平台 ∩ 个人）。这里继续按它裁档。
     select: (data) => data.platformCaps,
   })
   const caps = capsQuery.data ?? FALLBACK_CAPS
   const maxPidsLimit = Math.min(SELF_SERVE_MAX_PIDS, caps.maxPids)
+  // 个人 pids 封顶若低于自助下限，下限跟着降，否则输入框永远非法、建不出来。
+  const pidsFloor = Math.min(MIN_PIDS_LIMIT, maxPidsLimit)
 
-  const memoryChoices = MEMORY_MB_OPTIONS.filter((mb) => mb <= caps.maxMemoryMb)
-  const cpuChoices = CPU_OPTIONS.filter((n) => n <= caps.maxCpus)
-  const diskChoices = DISK_MB_OPTIONS.filter((mb) => mb <= caps.maxDiskMb)
+  const memoryChoices = choicesAtMost(MEMORY_MB_OPTIONS, caps.maxMemoryMb, 1)
+  const cpuChoices = choicesAtMost(CPU_OPTIONS, caps.maxCpus)
+  const diskChoices = choicesAtMost(DISK_MB_OPTIONS, caps.maxDiskMb, 128)
 
   const [slug, setSlug] = useState('')
   const [memoryMb, setMemoryMb] = useState(() =>
@@ -98,15 +112,28 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
 
   const pidsLimit = Number(pids)
   const pidsValid =
-    Number.isInteger(pidsLimit) && pidsLimit >= MIN_PIDS_LIMIT && pidsLimit <= maxPidsLimit
+    Number.isInteger(pidsLimit) && pidsLimit >= pidsFloor && pidsLimit <= maxPidsLimit
+
+  useEffect(() => {
+    setPids((current) => {
+      const n = Number(current)
+      if (!Number.isFinite(n) || n > maxPidsLimit) return String(Math.min(DEFAULT_PIDS_LIMIT, maxPidsLimit))
+      return current
+    })
+  }, [maxPidsLimit])
+
+  const memoryValue = memoryChoices.includes(memoryMb) ? memoryMb : memoryChoices.at(-1)
+  const cpuValue = cpuChoices.includes(cpus) ? cpus : cpuChoices.at(-1)
+  const diskValue = diskChoices.includes(diskMb) ? diskMb : diskChoices.at(-1)
+  const tiersReady = memoryValue !== undefined && cpuValue !== undefined && diskValue !== undefined
 
   const create = useMutation({
     mutationFn: () =>
       createInstance({
         slug: slug.trim(),
-        cpus,
-        memoryMb,
-        diskMb,
+        cpus: cpuValue ?? cpus,
+        memoryMb: memoryValue ?? memoryMb,
+        diskMb: diskValue ?? diskMb,
         pidsLimit,
         // 没选具体版本就不带这个键，让服务端用平台默认版本（D21）
         ...(image === DEFAULT_IMAGE ? {} : { image }),
@@ -122,7 +149,7 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    if (pidsValid) create.mutate()
+    if (pidsValid && tiersReady) create.mutate()
   }
 
   const memoryOptions = memoryChoices.map((mb) => ({
@@ -220,7 +247,7 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
             <FieldLabel htmlFor="memory">{t('instances.memory')}</FieldLabel>
             <Select
               items={memoryOptions}
-              value={memoryMb}
+              value={memoryValue ?? memoryMb}
               onValueChange={(value) => {
                 if (typeof value === 'number') setMemoryMb(value)
               }}
@@ -244,7 +271,7 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
             <FieldLabel htmlFor="cpu">{t('instances.cpu')}</FieldLabel>
             <Select
               items={cpuOptions}
-              value={cpus}
+              value={cpuValue ?? cpus}
               onValueChange={(value) => {
                 if (typeof value === 'number') setCpus(value)
               }}
@@ -267,9 +294,9 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
 
         <Field>
           <FieldLabel htmlFor="disk">{t('instances.disk')}</FieldLabel>
-          <Select
-            items={diskOptions}
-            value={diskMb}
+            <Select
+              items={diskOptions}
+              value={diskValue ?? diskMb}
             onValueChange={(value) => {
               if (typeof value === 'number') setDiskMb(value)
             }}
@@ -301,8 +328,8 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
           />
           <p className="text-xs text-muted-foreground">
             {pidsValid
-              ? t('instances.pidsHint', { min: MIN_PIDS_LIMIT, max: maxPidsLimit })
-              : t('instances.pidsInvalid', { min: MIN_PIDS_LIMIT, max: maxPidsLimit })}
+              ? t('instances.pidsHint', { min: pidsFloor, max: maxPidsLimit })
+              : t('instances.pidsInvalid', { min: pidsFloor, max: maxPidsLimit })}
           </p>
         </Field>
           </div>
@@ -313,7 +340,7 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
         <Button variant="outline" className="h-10 px-6 text-[14px]" render={<Link to="/workspaces" />} nativeButton={false}>
           {t('common.cancel')}
         </Button>
-        <Button type="submit" className="h-10 px-6 text-[14px] shadow-sm" disabled={create.isPending || !pidsValid}>
+        <Button type="submit" className="h-10 px-6 text-[14px] shadow-sm" disabled={create.isPending || !pidsValid || !tiersReady}>
           {create.isPending ? t('instances.creating') : t('instances.create')}
         </Button>
       </DialogFooter>

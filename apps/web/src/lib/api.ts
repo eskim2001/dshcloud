@@ -360,6 +360,11 @@ export interface AdminUser {
   banReason: string | null
   /** null = 用平台默认上限（maxInstancesPerUser）。 */
   instanceQuota: number | null
+  /** 单实例资源封顶。null = 用平台封顶。 */
+  cpuQuota: number | null
+  memoryMbQuota: number | null
+  pidsQuota: number | null
+  diskMbQuota: number | null
   instanceCount: number
   createdAt: string
 }
@@ -390,6 +395,8 @@ export interface AdminInstance {
 export async function listAdminUsers(): Promise<{
   users: AdminUser[]
   maxInstancesPerUser: number
+  /** 平台单实例封顶。用户页用它做 placeholder，并挡住写得更高的值。 */
+  platformCaps: PlatformCaps
 }> {
   return request('/api/admin/users')
 }
@@ -434,10 +441,19 @@ export async function unbanUser(id: string): Promise<void> {
   await request(`/api/admin/users/${id}/unban`, { method: 'POST', body: '{}' })
 }
 
-export async function setUserQuota(id: string, quota: number | null): Promise<void> {
+/** `quota` 是实例个数（旧字段）。资源四项 null = 清掉个人覆盖、回落平台封顶。缺省的键不改。 */
+export interface UserQuotaPatch {
+  quota?: number | null
+  cpuQuota?: number | null
+  memoryMbQuota?: number | null
+  pidsQuota?: number | null
+  diskMbQuota?: number | null
+}
+
+export async function setUserQuota(id: string, patch: UserQuotaPatch): Promise<void> {
   await request(`/api/admin/users/${id}/quota`, {
     method: 'PATCH',
-    body: JSON.stringify({ quota }),
+    body: JSON.stringify(patch),
   })
 }
 
