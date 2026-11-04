@@ -15,6 +15,10 @@ done
 
 LOG=/tmp/dsh.log
 : > "$LOG"
+
+# cordis-plugin-hmr 仍硬校验 process.execArgv 含 --expose-internals（0.1.6-alpha.1 实测）
+export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--expose-internals"
+
 dsh web --patch /etc/platform/owns-host.yml \
   --host 127.0.0.1 --port "$DSH_PORT" --no-open $TRUSTED > "$LOG" 2>&1 &
 DSH_PID=$!
