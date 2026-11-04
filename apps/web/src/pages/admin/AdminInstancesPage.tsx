@@ -59,7 +59,7 @@ export default function AdminInstancesPage() {
     queryKey: keys.adminInstances,
     queryFn: listAdminInstances,
     // 见 lib/instance-status.ts：在途按 3 秒跟，其余 10 秒兜底
-    refetchInterval: (query) => listRefetchInterval(query.state.data),
+    refetchInterval: (query) => listRefetchInterval(query.state.data?.instances),
   })
 
   /** 正在看日志的实例（null = 抽屉关着）。 */
@@ -75,9 +75,12 @@ export default function AdminInstancesPage() {
 
   /** 筛选按钮上固定这几个状态；状态是服务端现算的，做成"出现过的状态"会一直在抖。 */
   const statusFilters = ['all', 'running', 'stopped', 'error'] as const
-  const attentionCount = (instances.data ?? []).filter(needsAttention).length
-  const runningCount = (instances.data ?? []).filter((item) => item.status === 'running').length
-  const visible = (instances.data ?? []).filter((i) => {
+  const list = instances.data?.instances ?? []
+  const attentionCount = list.filter(needsAttention).length
+  const runningCount = instances.data?.runningCount ?? list.filter((item) => item.status === 'running').length
+  const maxRunning = instances.data?.maxRunning
+  const platformCaps = instances.data?.platformCaps
+  const visible = list.filter((i) => {
     if (statusFilter !== 'all' && i.status !== statusFilter) return false
     const needle = search.trim().toLowerCase()
     return needle === '' || i.slug.toLowerCase().includes(needle) || i.ownerEmail.toLowerCase().includes(needle)
@@ -134,8 +137,15 @@ export default function AdminInstancesPage() {
       <AdminPage title={t('admin.instances.title')} description={t('admin.instances.description')}>
         <AdminMetricStrip
           items={[
-            { label: t('admin.instances.total'), value: instances.data?.length ?? 0, icon: Layers3Icon },
-            { label: t('status.running'), value: runningCount, icon: CircleCheckIcon },
+            { label: t('admin.instances.total'), value: list.length, icon: Layers3Icon },
+            {
+              label: t('status.running'),
+              value:
+                maxRunning !== undefined && maxRunning > 0
+                  ? `${runningCount} / ${maxRunning}`
+                  : runningCount,
+              icon: CircleCheckIcon,
+            },
             { label: t('admin.instances.needsAttention'), value: attentionCount, icon: AlertTriangleIcon, alert: attentionCount > 0 },
           ]}
         />
@@ -284,10 +294,11 @@ export default function AdminInstancesPage() {
             </DialogTitle>
             <DialogDescription>{t('admin.instances.quotaHint')}</DialogDescription>
           </DialogHeader>
-          {quotaTarget !== null && (
+          {quotaTarget !== null && platformCaps !== undefined && (
             <InstanceQuotaForm
               key={quotaTarget.id}
               item={quotaTarget}
+              platformCaps={platformCaps}
               pending={instanceQuota.isPending}
               error={errorTextOf(instanceQuota.error, t('admin.actionFailed'))}
               onSubmit={(value) =>

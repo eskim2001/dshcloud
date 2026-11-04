@@ -12,9 +12,13 @@ export default defineConfig({
     // 端口写死在入口配置里（host.docker.internal:5173），被占时宁可报错，
     // 别自动换到 5174——换了 Traefik 就 502。
     strictPort: true,
-    // 必须显式绑 IPv4：默认 host 是 'localhost'，Node 会解析成 ::1，
-    // 而容器里的 Traefik 经 host.docker.internal 只能摸到宿主的 IPv4 回环。
-    host: '127.0.0.1',
+    // 必须显式绑 IPv4：默认 host 是 'localhost'，Node 会解析成 ::1。
+    //
+    // Docker Desktop 上绑 127.0.0.1 时，容器经 host.docker.internal 仍可达宿主回环；
+    // Linux Docker 的 host-gateway（如 172.17.0.1）**到不了** loopback —— Traefik 在
+    // 容器、Vite 在宿主时必须 0.0.0.0（或真实宿主 IP）。可用 VITE_DEV_SERVER_HOST 覆盖。
+    // 见 docs/FORK.md。
+    host: process.env.VITE_DEV_SERVER_HOST ?? '0.0.0.0',
     // *.localhost / *.lvh.me 解析到回环，本地就能验「cookie 是否覆盖实例子域」
     allowedHosts: ['.localhost', '.lvh.me'],
     /**

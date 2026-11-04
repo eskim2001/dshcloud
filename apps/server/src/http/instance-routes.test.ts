@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { machineName } from '@dsh-cloud/instance-spec'
 import type { InstanceRow } from '../db/schema.js'
 import type { Env } from '../env.js'
-import { ImageRejectedError, NoRollbackError, SlugConfirmMismatchError } from '../instance/provisioner.js'
+import {
+  ImageRejectedError,
+  MaxRunningExceededError,
+  NoRollbackError,
+  SlugConfirmMismatchError,
+} from '../instance/provisioner.js'
 import { registerInstanceRoutes, type InstanceOps, type InstanceRouteDeps } from './instance-routes.js'
 
 const env = {
@@ -11,6 +16,12 @@ const env = {
   BASE_DOMAIN: 'app.example.com',
   CONSOLE_DOMAIN: 'console.app.example.com',
   INSTANCE_IMAGE_REPO: 'dsh-instance',
+  PLATFORM_MAX_CPUS: 2,
+  PLATFORM_MAX_MEMORY_MB: 2048,
+  PLATFORM_MAX_PIDS: 512,
+  PLATFORM_MAX_DISK_MB: 10_240,
+  PLATFORM_MAX_RUNNING: 3,
+  PLATFORM_IDLE_CULL_MINUTES: 45,
 } as Env
 
 const ME = 'user-1'
@@ -34,6 +45,7 @@ function row(over: Partial<InstanceRow> = {}): InstanceRow {
     diskMb: 10_240,
     lastError: null,
     stoppedAt: null,
+    lastActiveAt: new Date(0),
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...over,
@@ -502,6 +514,63 @@ describe('实例面：创建', () => {
     })
     expect(res.statusCode).toBe(400)
     expect(res.json().error).toMatch(/还没有默认镜像版本/)
+  })
+
+  it('超过平台资源封顶 → 400，不调 create', async () => {
+    const create = vi.fn()
+    const { app } = await build(ME, { provisioner: { create } })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      payload: { slug: 'alice', cpus: 4, memoryMb: 8192 },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('同时 running 已满 → 409 + 中文错误', async () => {
+    const { app } = await build(ME, {
+      provisioner: {
+        create: async () => {
+          throw new MaxRunningExceededError(3, 3)
+        },
+      },
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      payload: { slug: 'alice' },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toMatch(/同时运行的工作空间已达上限/)
+  })
+
+  it('列表带回 platformCaps', async () => {
+    const { app } = await build(ME)
+    const res = await app.inject({ method: 'GET', url: '/api/instances' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().platformCaps).toEqual({
+      maxCpus: 2,
+      maxMemoryMb: 2048,
+      maxPids: 512,
+      maxDiskMb: 10_240,
+      maxRunning: 3,
+      idleCullMinutes: 45,
+    })
+  })
+
+  it('start 撞 max-running → 409', async () => {
+    const { app } = await build(ME, {
+      getById: async () => row({ status: 'stopped' }),
+      provisioner: {
+        start: async () => {
+          throw new MaxRunningExceededError(3, 3)
+        },
+      },
+    })
+    const res = await app.inject({ method: 'POST', url: '/api/instances/i-1/start' })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toMatch(/同时运行/)
   })
 })
 

@@ -56,6 +56,18 @@ export async function countInstancesByOwner(db: Db, ownerId: string): Promise<nu
 }
 
 /**
+ * 当前意图为 `running` 的活实例数（与 reconciler 一致：以 DB status 为准，
+ * 启动前闸门靠它，不拿 Docker 瞬时态做并发上限）。
+ */
+export async function countRunningInstances(db: Db): Promise<number> {
+  const rows = await db
+    .select({ n: count() })
+    .from(instance)
+    .where(and(eq(instance.status, 'running'), isNull(instance.deletedAt)))
+  return rows[0]?.n ?? 0
+}
+
+/**
  * 建实例记录。slug 冲突由唯一索引兜底，转成可读错误。
  *
  * 已删除的行**仍然占着 slug**：同一 owner 可以重建同名（浏览器状态本来就是他的），换个人不行 ——
@@ -99,6 +111,8 @@ export interface InstancePatch {
   memoryMb?: number
   pidsLimit?: number
   diskMb?: number
+  /** 工作空间最近活跃时刻（空闲回收 / forward-auth 触摸）。 */
+  lastActiveAt?: Date
 }
 
 export async function updateInstance(
@@ -108,19 +122,27 @@ export async function updateInstance(
 ): Promise<InstanceRow | undefined> {
   const rows = await db
     .update(instance)
-    .set({ ...patch, ...stoppedAtPatch(patch), updatedAt: new Date() })
+    .set({ ...patch, ...statusDerivedPatch(patch), updatedAt: new Date() })
     .where(and(eq(instance.id, id), isNull(instance.deletedAt)))
     .returning()
   return rows[0]
 }
 
 /**
- * `stoppedAt` 是派生字段——由 status 推出来，调用方不用自己记。
+ * `stoppedAt` / `lastActiveAt` 是派生字段——由 status 推出来，调用方不用自己记。
  * 集中在这里是为了让 stop / start / 对账三条路径自动一致。
+ * 显式传入的 `lastActiveAt` 优先（活动触摸别被「顺便标 running」盖掉语义也无妨）。
  */
-function stoppedAtPatch(patch: InstancePatch): { stoppedAt?: Date | null } {
+function statusDerivedPatch(
+  patch: InstancePatch,
+): { stoppedAt?: Date | null; lastActiveAt?: Date } {
   if (patch.status === 'stopped') return { stoppedAt: new Date() }
-  if (patch.status === 'running') return { stoppedAt: null }
+  if (patch.status === 'running') {
+    return {
+      stoppedAt: null,
+      ...(patch.lastActiveAt === undefined ? { lastActiveAt: new Date() } : {}),
+    }
+  }
   return {}
 }
 

@@ -7,6 +7,7 @@ import {
 } from '@dsh-cloud/instance-spec'
 import type { Db } from '../db/client.js'
 import {
+  countRunningInstances,
   createInstanceRecord,
   retainInstanceRecord,
   findInstanceById,
@@ -76,6 +77,22 @@ export class ImageUpgradeFailedError extends Error {
 }
 
 /**
+ * 全局同时 running 已满。`PLATFORM_MAX_RUNNING=0` 时不会抛。
+ * HTTP 映射 409——与配额撞墙同档：请求本身此刻做不到，不是服务端故障。
+ */
+export class MaxRunningExceededError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly running: number,
+  ) {
+    super(
+      `同时运行的工作空间已达上限（${running}/${limit}），请先停止闲置的工作空间后再试`,
+    )
+    this.name = 'MaxRunningExceededError'
+  }
+}
+
+/**
  * 换镜像 / 回滚的**预期内**失败 → HTTP 400（请求本身做不到，不是服务端故障）。
  * 集中在这里，是因为实例面和管理面要给出同样的状态码，漏一处就是两套语义。
  */
@@ -122,6 +139,8 @@ export class InstanceProvisioner {
       await this.assertImageAllowed(input.image, { requireLocal: false })
     }
 
+    await this.assertCanStartRunning(false)
+
     const newInstance: NewInstance = {
       id: crypto.randomUUID(),
       slug: input.slug,
@@ -151,6 +170,8 @@ export class InstanceProvisioner {
   private async restartUnlocked(id: string): Promise<InstanceRow> {
     const row = await findInstanceById(this.db, id)
     if (row === undefined) throw new Error(`实例不存在：${id}`)
+
+    await this.assertCanStartRunning(row.status === 'running')
 
     try {
       return await this.applyRuntime(row)
@@ -197,6 +218,9 @@ export class InstanceProvisioner {
   private async startUnlocked(id: string): Promise<InstanceRow> {
     const row = await findInstanceById(this.db, id)
     if (row === undefined) throw new Error(`实例不存在：${id}`)
+
+    await this.assertCanStartRunning(row.status === 'running')
+
     if (row.containerId === null) return this.applyRuntime(row)
 
     try {
@@ -216,6 +240,18 @@ export class InstanceProvisioner {
     } catch (err) {
       return await this.failWith(row.id, err)
     }
+  }
+
+  /**
+   * 全局 running 闸门。已在跑的（含宿主重启后 boot 拉起）不占新名额；
+   * `PLATFORM_MAX_RUNNING=0` 关闭上限。
+   */
+  private async assertCanStartRunning(alreadyRunning: boolean): Promise<void> {
+    if (alreadyRunning) return
+    const limit = this.env.PLATFORM_MAX_RUNNING
+    if (limit === 0) return
+    const running = await countRunningInstances(this.db)
+    if (running >= limit) throw new MaxRunningExceededError(limit, running)
   }
 
   /**

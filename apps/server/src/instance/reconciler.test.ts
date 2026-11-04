@@ -21,6 +21,7 @@ function row(over: Partial<InstanceRow> & { slug: string }): InstanceRow {
     diskMb: 10_240,
     lastError: null,
     stoppedAt: null,
+    lastActiveAt: new Date(0),
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...over,

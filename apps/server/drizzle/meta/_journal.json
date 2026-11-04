@@ -92,6 +92,13 @@
       "when": 1789812852412,
       "tag": "0012_workspace_access",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790000000013,
+      "tag": "0013_instance_last_active",
+      "breakpoints": true
     }
   ]
 }

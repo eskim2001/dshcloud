@@ -141,6 +141,11 @@ export const instance = pgTable(
      * 调用方不用管——详情页用它显示「已停止多久」。
      */
     stoppedAt: timestamp('stopped_at', { withTimezone: true }),
+    /**
+     * 工作空间最近一次被授权访问（或启动成功）的时刻。
+     * 空闲回收靠它判「多久没人用」；start/create 成功与 forward-auth 放行会刷新。
+     */
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

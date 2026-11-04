@@ -183,10 +183,23 @@ export async function changePassword(input: {
 
 // ─── 实例（平台 API）─────────────────────────────────────────────────────
 
+/** 平台级资源 / 并发封顶（只读；创建表单据此裁选项）。 */
+export interface PlatformCaps {
+  maxCpus: number
+  maxMemoryMb: number
+  maxPids: number
+  maxDiskMb: number
+  /** `0` = 不限制同时 running 数。 */
+  maxRunning: number
+  /** `0` = 关闭空闲回收。 */
+  idleCullMinutes: number
+}
+
 /** 我的实例 + **我能开几个**（额度一起返回：页面要显示「2 / 3」，别让用户撞墙才知道）。 */
 export interface MyInstances {
   instances: InstanceSummary[]
   maxInstances: number
+  platformCaps: PlatformCaps
 }
 
 export async function listInstances(): Promise<MyInstances> {
@@ -381,9 +394,17 @@ export async function listAdminUsers(): Promise<{
   return request('/api/admin/users')
 }
 
-export async function listAdminInstances(): Promise<AdminInstance[]> {
-  const res = await request<{ instances: AdminInstance[] }>('/api/admin/instances')
-  return res.instances
+export interface AdminInstancesResult {
+  instances: AdminInstance[]
+  /** DB status==='running' 的活实例数（与 max-running 闸门同一口径）。 */
+  runningCount: number
+  /** `0` = 不限制。 */
+  maxRunning: number
+  platformCaps: PlatformCaps
+}
+
+export async function listAdminInstances(): Promise<AdminInstancesResult> {
+  return request<AdminInstancesResult>('/api/admin/instances')
 }
 
 export async function banUser(id: string, reason: string): Promise<void> {

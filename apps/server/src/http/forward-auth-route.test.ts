@@ -16,7 +16,7 @@ function build(over: Partial<ForwardAuthDeps> = {}) {
     publicScheme: 'https',
     gateSecret: SECRET,
     findInstanceBySlug: async (slug) =>
-      slug === 'alice' ? { slug: 'alice', ownerId: 'user-alice' } : undefined,
+      slug === 'alice' ? { id: 'i-alice', slug: 'alice', ownerId: 'user-alice' } : undefined,
     resolveUserId: async (cookie) => (cookie?.includes('dsh_cloud.session_token=ok') ? 'user-alice' : undefined),
     ...over,
   })

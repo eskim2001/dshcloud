@@ -6,7 +6,16 @@ import { RegistryError } from '../instance/image-sync.js'
 import { ImageRejectedError, NoRollbackError } from '../instance/provisioner.js'
 import { registerAdminRoutes, type AdminRouteDeps } from './admin-routes.js'
 
-const env = { MAX_INSTANCES_PER_USER: 3, INSTANCE_IMAGE_REPO: 'dsh-instance' } as Env
+const env = {
+  MAX_INSTANCES_PER_USER: 3,
+  INSTANCE_IMAGE_REPO: 'dsh-instance',
+  PLATFORM_MAX_CPUS: 2,
+  PLATFORM_MAX_MEMORY_MB: 2048,
+  PLATFORM_MAX_PIDS: 512,
+  PLATFORM_MAX_DISK_MB: 10_240,
+  PLATFORM_MAX_RUNNING: 3,
+  PLATFORM_IDLE_CULL_MINUTES: 45,
+} as Env
 
 const ADMIN = { id: 'admin-1', role: 'admin' }
 const USER = { id: 'user-1', role: 'user' }
@@ -78,6 +87,7 @@ async function build(
     env,
     listUsers: async () => [],
     listInstances: async () => [],
+    countRunning: async () => 0,
     // 单测里没有 Docker：默认让它失败，路由回退到 DB 快照
     listContainerStates: async () => {
       throw new Error('单测没有 Docker')
@@ -329,6 +339,8 @@ describe('平台管理面：管理员路径', () => {
       { cpus: 1, memoryMb: 2048, pidsLimit: 99_999, diskMb: 10_240 },
       { cpus: 1, memoryMb: 2048, pidsLimit: 512, diskMb: 64 }, // 磁盘太小
       { cpus: 1, memoryMb: 2048 }, // 缺字段
+      { cpus: 4, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 }, // 超平台 CPU 封顶
+      { cpus: 2, memoryMb: 4096, pidsLimit: 512, diskMb: 10_240 }, // 超平台内存封顶
     ]
     for (const payload of bad) {
       const res = await app.inject({
@@ -346,7 +358,7 @@ describe('平台管理面：管理员路径', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/admin/instances/nope/quota',
-      payload: { cpus: 2, memoryMb: 4096, pidsLimit: 512, diskMb: 10_240 },
+      payload: { cpus: 2, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 },
     })
     expect(res.statusCode).toBe(404)
   })
@@ -357,14 +369,33 @@ describe('平台管理面：管理员路径', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/admin/instances/i-x/quota',
-      payload: { cpus: 4, memoryMb: 8192, pidsLimit: 1024, diskMb: 20_480 },
+      payload: { cpus: 2, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 },
     })
     expect(res.statusCode).toBe(200)
     expect(setInstanceQuota).toHaveBeenCalledWith('i-x', {
-      cpus: 4,
-      memoryMb: 8192,
-      pidsLimit: 1024,
-      diskMb: 20_480,
+      cpus: 2,
+      memoryMb: 2048,
+      pidsLimit: 512,
+      diskMb: 10_240,
+    })
+  })
+
+  it('舰队列表带回 runningCount / maxRunning / platformCaps', async () => {
+    const { app } = await build(ADMIN, { countRunning: async () => 2 })
+    const res = await app.inject({ method: 'GET', url: '/api/admin/instances' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      instances: [],
+      runningCount: 2,
+      maxRunning: 3,
+      platformCaps: {
+        maxCpus: 2,
+        maxMemoryMb: 2048,
+        maxPids: 512,
+        maxDiskMb: 10_240,
+        maxRunning: 3,
+        idleCullMinutes: 45,
+      },
     })
   })
 

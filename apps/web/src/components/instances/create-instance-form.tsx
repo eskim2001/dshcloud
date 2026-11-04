@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select.js'
-import { ApiError, createInstance, listImages } from '@/lib/api.js'
+import { ApiError, createInstance, listImages, listInstances, type PlatformCaps } from '@/lib/api.js'
 import { formatMb } from '@/lib/format.js'
 import { invalidateInstances, keys } from '@/lib/query-keys.js'
 
@@ -38,7 +38,17 @@ const DEFAULT_PIDS_LIMIT = 512
  * 128 够跑 dsh 本身，留着"调大"这个真实需求（重型构建）。
  */
 const MIN_PIDS_LIMIT = 128
-const MAX_PIDS_LIMIT = 4_096
+/** 历史自助上限；真正生效的是 min(这个值, platformCaps.maxPids)。 */
+const SELF_SERVE_MAX_PIDS = 4_096
+
+const FALLBACK_CAPS: PlatformCaps = {
+  maxCpus: 2,
+  maxMemoryMb: 2048,
+  maxPids: 512,
+  maxDiskMb: 10_240,
+  maxRunning: 3,
+  idleCullMinutes: 45,
+}
 
 /** 版本下拉里「不指定」的哨兵值——Select 不接受空字符串。 */
 const DEFAULT_IMAGE = '__default__'
@@ -57,11 +67,26 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
+  const capsQuery = useQuery({
+    queryKey: keys.instances,
+    queryFn: listInstances,
+    staleTime: 60_000,
+    select: (data) => data.platformCaps,
+  })
+  const caps = capsQuery.data ?? FALLBACK_CAPS
+  const maxPidsLimit = Math.min(SELF_SERVE_MAX_PIDS, caps.maxPids)
+
+  const memoryChoices = MEMORY_MB_OPTIONS.filter((mb) => mb <= caps.maxMemoryMb)
+  const cpuChoices = CPU_OPTIONS.filter((n) => n <= caps.maxCpus)
+  const diskChoices = DISK_MB_OPTIONS.filter((mb) => mb <= caps.maxDiskMb)
+
   const [slug, setSlug] = useState('')
-  const [memoryMb, setMemoryMb] = useState(DEFAULT_MEMORY_MB)
-  const [cpus, setCpus] = useState(DEFAULT_CPUS)
-  const [diskMb, setDiskMb] = useState(DEFAULT_DISK_MB)
-  const [pids, setPids] = useState(String(DEFAULT_PIDS_LIMIT))
+  const [memoryMb, setMemoryMb] = useState(() =>
+    Math.min(DEFAULT_MEMORY_MB, FALLBACK_CAPS.maxMemoryMb),
+  )
+  const [cpus, setCpus] = useState(() => Math.min(DEFAULT_CPUS, FALLBACK_CAPS.maxCpus))
+  const [diskMb, setDiskMb] = useState(() => Math.min(DEFAULT_DISK_MB, FALLBACK_CAPS.maxDiskMb))
+  const [pids, setPids] = useState(String(Math.min(DEFAULT_PIDS_LIMIT, FALLBACK_CAPS.maxPids)))
   const [image, setImage] = useState(DEFAULT_IMAGE)
 
   // 只在弹窗打开时拉：版本列表平时用不上
@@ -73,7 +98,7 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
 
   const pidsLimit = Number(pids)
   const pidsValid =
-    Number.isInteger(pidsLimit) && pidsLimit >= MIN_PIDS_LIMIT && pidsLimit <= MAX_PIDS_LIMIT
+    Number.isInteger(pidsLimit) && pidsLimit >= MIN_PIDS_LIMIT && pidsLimit <= maxPidsLimit
 
   const create = useMutation({
     mutationFn: () =>
@@ -100,15 +125,15 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
     if (pidsValid) create.mutate()
   }
 
-  const memoryOptions = MEMORY_MB_OPTIONS.map((mb) => ({
+  const memoryOptions = memoryChoices.map((mb) => ({
     label: t('instances.gigabytes', { count: mb / 1024 }),
     value: mb,
   }))
-  const cpuOptions = CPU_OPTIONS.map((n) => ({
+  const cpuOptions = cpuChoices.map((n) => ({
     label: t('instances.cores', { count: n }),
     value: n,
   }))
-  const diskOptions = DISK_MB_OPTIONS.map((mb) => ({ label: formatMb(mb), value: mb }))
+  const diskOptions = diskChoices.map((mb) => ({ label: formatMb(mb), value: mb }))
 
   const defaultRef = images.data?.default ?? null
   const versionOptions = [
@@ -276,8 +301,8 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
           />
           <p className="text-xs text-muted-foreground">
             {pidsValid
-              ? t('instances.pidsHint', { min: MIN_PIDS_LIMIT, max: MAX_PIDS_LIMIT })
-              : t('instances.pidsInvalid', { min: MIN_PIDS_LIMIT, max: MAX_PIDS_LIMIT })}
+              ? t('instances.pidsHint', { min: MIN_PIDS_LIMIT, max: maxPidsLimit })
+              : t('instances.pidsInvalid', { min: MIN_PIDS_LIMIT, max: maxPidsLimit })}
           </p>
         </Field>
           </div>

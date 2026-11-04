@@ -30,7 +30,7 @@ describe('workspace response boundary', () => {
     const token = 't'.repeat(43)
     const gateway = createWorkspaceGateway({
       baseDomain: 'example.com', consoleDomain: 'console.example.com', publicScheme: 'https', gateSecret: 'test',
-      findInstanceBySlug: async slug => slug === 'alice' ? { slug, ownerId: 'alice' } : undefined,
+      findInstanceBySlug: async slug => slug === 'alice' ? { id: `i-${slug}`, slug, ownerId: 'alice' } : undefined,
       findTargetPort: async () => backendPort,
       resolveUserId: async cookie => workspaceToken(cookie, true) === token ? 'alice' : undefined,
       login: {
@@ -86,7 +86,7 @@ describe('workspace response boundary', () => {
     const gateway = createWorkspaceGateway({
       baseDomain: 'example.com', consoleDomain: 'console.example.com',
       publicScheme: 'https', gateSecret: 'test',
-      findInstanceBySlug: async slug => ({ slug, ownerId: owner }),
+      findInstanceBySlug: async slug => ({ id: `i-${slug}`, slug, ownerId: owner }),
       findTargetPort: async () => backendPort,
       resolveUserId: async () => 'alice',
     })
@@ -121,7 +121,7 @@ describe('workspace response boundary', () => {
     const gateway = createWorkspaceGateway({
       baseDomain: 'example.com', consoleDomain: 'console.example.com',
       publicScheme: 'https', gateSecret: 'test',
-      findInstanceBySlug: async slug => ({ slug, ownerId: 'alice' }),
+      findInstanceBySlug: async slug => ({ id: `i-${slug}`, slug, ownerId: 'alice' }),
       findTargetPort: async () => backendPort,
       resolveUserId: async () => 'alice',
     })
@@ -174,7 +174,7 @@ describe('workspace response boundary', () => {
     const port = await listen(createWorkspaceGateway({
       baseDomain: 'example.com', consoleDomain: 'console.example.com',
       publicScheme: 'https', gateSecret: 'test',
-      findInstanceBySlug: async slug => slug === 'alice' ? { slug, ownerId: 'alice' } : undefined,
+      findInstanceBySlug: async slug => slug === 'alice' ? { id: `i-${slug}`, slug, ownerId: 'alice' } : undefined,
       findTargetPort: async () => backendPort,
       resolveUserId: async cookie => cookie?.includes('dsh_cloud.session_token=alice') ? 'alice' : 'bob',
     }))

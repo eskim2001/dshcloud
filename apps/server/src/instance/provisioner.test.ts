@@ -7,6 +7,7 @@ import {
   ImageRejectedError,
   ImageUpgradeFailedError,
   InstanceProvisioner,
+  MaxRunningExceededError,
   NoRollbackError,
   SlugConfirmMismatchError,
 } from './provisioner.js'
@@ -16,6 +17,7 @@ vi.mock('../db/instance-repo.js', () => ({
   listAllInstances: vi.fn(async () => []),
   updateInstance: vi.fn(),
   countInstancesByOwner: vi.fn(),
+  countRunningInstances: vi.fn(async () => 0),
   createInstanceRecord: vi.fn(),
   retainInstanceRecord: vi.fn(),
   QuotaExceededError: class QuotaExceededError extends Error {},
@@ -27,11 +29,18 @@ vi.mock('../db/image-release-repo.js', () => ({
 }))
 vi.mock('../db/image-catalog-repo.js', () => ({ isImageInCatalog: vi.fn() }))
 
-const { findInstanceById, updateInstance, createInstanceRecord, retainInstanceRecord } = await import('../db/instance-repo.js')
+const {
+  findInstanceById,
+  updateInstance,
+  createInstanceRecord,
+  retainInstanceRecord,
+  countRunningInstances,
+} = await import('../db/instance-repo.js')
 const { findDefaultImageRelease, isImageRelease } = await import('../db/image-release-repo.js')
 const { isImageInCatalog } = await import('../db/image-catalog-repo.js')
 const findById = vi.mocked(findInstanceById)
 const update = vi.mocked(updateInstance)
+const countRunning = vi.mocked(countRunningInstances)
 const findDefaultRelease = vi.mocked(findDefaultImageRelease)
 const isPublished = vi.mocked(isImageRelease)
 const inCatalog = vi.mocked(isImageInCatalog)
@@ -42,6 +51,7 @@ const env = {
   PLATFORM_SECRET: 'test-secret',
   MAX_INSTANCES_PER_USER: 3,
   INSTANCE_IMAGE_REPO: 'dsh-instance',
+  PLATFORM_MAX_RUNNING: 3,
 } as Env
 
 /** 升级目标：已发布的那一版。 */
@@ -66,6 +76,7 @@ function row(over: Partial<InstanceRow> = {}): InstanceRow {
     diskMb: 10_240,
     lastError: null,
     stoppedAt: null,
+    lastActiveAt: new Date(0),
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...over,
@@ -206,6 +217,7 @@ const quota = { cpus: 1, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 }
 beforeEach(() => {
   vi.clearAllMocks()
   update.mockImplementation(async (_db, _id, patch) => ({ ...row(), ...patch }) as InstanceRow)
+  countRunning.mockResolvedValue(0)
   // 库里有一个默认版本，且任何目标都算「已发布」——要测拒绝的用例自己覆盖
   findDefaultRelease.mockResolvedValue({
     id: 'r-1',
@@ -216,6 +228,41 @@ beforeEach(() => {
   isPublished.mockResolvedValue(true)
   // 默认 catalog 里没有目标版本——要测「catalog 里有」的用例自己覆盖
   inCatalog.mockResolvedValue(false)
+})
+
+describe('全局同时 running 上限', () => {
+  it('create 时已满 → MaxRunningExceededError，不落库', async () => {
+    countRunning.mockResolvedValue(3)
+    const fakes = build()
+    await expect(
+      makeProvisioner(fakes).create({ slug: 'alice', ownerId: 'u1', ...quota }),
+    ).rejects.toBeInstanceOf(MaxRunningExceededError)
+    expect(createInstanceRecord).not.toHaveBeenCalled()
+  })
+
+  it('start 已 stopped、名额已满 → 拒绝；已 running 的 start 不占新名额', async () => {
+    countRunning.mockResolvedValue(3)
+    findById.mockResolvedValue(row({ status: 'stopped', containerId: 'c-1' }))
+    const fakes = build()
+    await expect(makeProvisioner(fakes).start('i-1')).rejects.toBeInstanceOf(MaxRunningExceededError)
+
+    findById.mockResolvedValue(row({ status: 'running', containerId: 'c-1' }))
+    await expect(makeProvisioner(fakes).start('i-1')).resolves.toBeTruthy()
+  })
+
+  it('PLATFORM_MAX_RUNNING=0 → 不限制', async () => {
+    countRunning.mockResolvedValue(99)
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: 'k' }))
+    const fakes = build()
+    const p = new InstanceProvisioner(
+      {} as never,
+      fakes.orchestrator,
+      fakes.dataStore,
+      { ...env, PLATFORM_MAX_RUNNING: 0 },
+      fakes.syncRoutes,
+    )
+    await expect(p.create({ slug: 'alice', ownerId: 'u1', ...quota })).resolves.toBeTruthy()
+  })
 })
 
 describe('storage ownership across lifecycle operations', () => {

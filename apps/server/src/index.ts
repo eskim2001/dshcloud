@@ -12,9 +12,10 @@ import { listAllInstances, updateInstance } from './db/instance-repo.js'
 import { deleteMetricsBefore, insertMetric } from './db/metric-repo.js'
 import { getPlatformSetting, savePlatformDomains } from './db/platform-setting-repo.js'
 import { loadEnv, withPlatformDomains } from './env.js'
+import { createActivityToucher } from './instance/activity.js'
 import { bootInstances } from './instance/boot.js'
 import { DataStore } from './instance/data-store.js'
-import { machineName } from '@dsh-cloud/instance-spec'
+import { selectIdleRunningInstances } from './instance/idle-cull.js'
 import { startMetricsSampler } from './instance/metrics-sampler.js'
 import { InstanceOrchestrator } from './instance/orchestrator.js'
 import { InstanceProvisioner } from './instance/provisioner.js'
@@ -48,6 +49,11 @@ const orchestrator = new InstanceOrchestrator(driver, env.INSTANCE_IMAGE_REPO)
 // 数据卷是运行时的概念，原语在驱动上；DataStore 只留策略（见 instance/data-store.ts）。
 const dataStore = new DataStore({ driver })
 
+// 工作空间访问成功 → 刷新 lastActiveAt（≥60s 节流），供空闲回收用。
+const touchActivity = createActivityToucher(async (id, at) => {
+  await updateInstance(db, id, { lastActiveAt: at })
+})
+
 const gateway = createWorkspaceGateway({
   baseDomain: env.BASE_DOMAIN, consoleDomain: env.CONSOLE_DOMAIN,
   publicScheme: env.PUBLIC_SCHEME, gateSecret: env.PLATFORM_SECRET,
@@ -63,6 +69,7 @@ const gateway = createWorkspaceGateway({
     const row = await findInstanceBySlug(db, slug)
     return row ? resolveWorkspaceSession(db, token, row.id) : undefined
   },
+  onAuthorized: (instance) => touchActivity(instance.id),
   login: {
     secure: env.PUBLIC_SCHEME === 'https',
     consoleOrigin: `${env.PUBLIC_SCHEME}://${env.CONSOLE_DOMAIN}`,
@@ -76,9 +83,13 @@ const credentialCleanup = setInterval(() => {
   void deleteExpiredWorkspaceAccess(db).catch(() => console.error('Workspace credential cleanup failed'))
 }, 60_000)
 credentialCleanup.unref()
+// workspace-gateway 与控制面共用 `CONTROL_PLANE_LISTEN_HOST`（默认 0.0.0.0）。
+// Traefik 经 host.docker.internal:gatewayPort 反代到这里；Linux host-gateway 摸不到
+// 宿主 loopback，硬绑 127.0.0.1 会让实例工作空间 502。Docker Desktop 可改回 127.0.0.1。
+// 勿与实例内 dsh `web --host`（保持 127.0.0.1）混淆——那是容器内回环，不是这条宿主绑定。
 await new Promise<void>((resolve, reject) => {
   gateway.once('error', reject)
-  gateway.listen(0, '127.0.0.1', resolve)
+  gateway.listen(0, env.CONTROL_PLANE_LISTEN_HOST, resolve)
 })
 const gatewayPort = (gateway.address() as import('node:net').AddressInfo).port
 
@@ -197,6 +208,7 @@ const app = await buildApp({
   dataStore,
   logger: true,
   bootstrap,
+  onWorkspaceAuthorized: touchActivity,
   // 只有引导态才把 setup 那条路接上；已配置时省掉它 ⇒ setup-routes 走「已配置」的默认行为
   ...(bootstrap
     ? {
@@ -223,6 +235,7 @@ const app = await buildApp({
 // 下面一整段只有**配好域名**才做。引导态连域名都没有：实例的位置要靠子域，谁也建不了实例
 // （那时只有 token 门保护的 setup 页）。硬跑只会拿空域名拼出一堆没意义的路由。
 let reconcileTimer: NodeJS.Timeout | undefined
+let idleCullTimer: NodeJS.Timeout | undefined
 let stopSampler: (() => void) | undefined
 
 if (bootstrap) {
@@ -259,6 +272,36 @@ if (bootstrap) {
   // 不 unref 的话进程退不掉、测试也会挂住
   reconcileTimer.unref()
 
+  // 空闲回收：停掉「running 且 lastActiveAt 过旧」的实例，给小机腾 running 名额。
+  // `PLATFORM_IDLE_CULL_MINUTES=0` 关闭。失败只告警，不挡对账。
+  if (env.PLATFORM_IDLE_CULL_MINUTES > 0) {
+    let idleCullPending = false
+    idleCullTimer = setInterval(() => {
+      if (idleCullPending) return
+      idleCullPending = true
+      void (async () => {
+        const idle = selectIdleRunningInstances(await listAllInstances(db), {
+          idleMinutes: env.PLATFORM_IDLE_CULL_MINUTES,
+        })
+        for (const row of idle) {
+          console.warn(
+            `空闲回收：停止工作空间 ${row.slug}（超过 ${env.PLATFORM_IDLE_CULL_MINUTES} 分钟无访问）`,
+          )
+          await provisioner.stop(row.id).catch((err: unknown) => {
+            console.warn(`空闲回收失败（${row.slug}）：${messageOf(err)}`)
+          })
+        }
+      })()
+        .catch((err: unknown) => {
+          console.warn(`空闲回收轮询失败：${messageOf(err)}`)
+        })
+        .finally(() => {
+          idleCullPending = false
+        })
+    }, 60_000)
+    idleCullTimer.unref()
+  }
+
   // 用量采样：一分钟一轮，顺带清理 30 天前的点。
   // Docker 原生给 stats，所以 CPU / 内存和磁盘用量都能采到。
   stopSampler = startMetricsSampler({
@@ -274,19 +317,20 @@ if (bootstrap) {
 // 平台自己的三条路由要在**开始服务之前**就位：引导口的文件不先落地，操作者打开 :80 什么也看不到。
 await projectPlatform(bootstrap ? undefined : env.CONSOLE_DOMAIN)
 
-// 引导态把控制面**直接开到对外**：此刻域名还不知道、证书更没影，操作者需要一个「打开就能用」
-// 的地址（安装脚本会把它打印出来）。口子上只挂 setup 页、健康检查和控制台静态文件 —— 见 `app.ts`
-// 里那段早返回，业务路由一条都不属于引导态。
+// 监听地址见 `CONTROL_PLANE_LISTEN_HOST`（默认 0.0.0.0）。
 //
-// 配好域名后就回到 `127.0.0.1`。那是**默认**（控制面在宿主网络上，Traefik 走回环进来），
-// 不是新增的限制 —— 引导态的开放在这条路径上是唯一的例外，也是它必须尽快收回的原因。
-const listenHost = bootstrap ? '0.0.0.0' : '127.0.0.1'
+// Docker Desktop 上绑 127.0.0.1 时，容器经 host.docker.internal 仍能摸到宿主回环；
+// Linux Docker 的 host-gateway（如 172.17.0.1）**到不了** loopback —— Traefik 在容器、
+// 控制面在宿主时必须绑 0.0.0.0（或真实宿主 IP）。生产仍应由反向代理对外，
+// 勿把控制面业务口直接暴露公网（见 docs/FORK.md）。
+const listenHost = env.CONTROL_PLANE_LISTEN_HOST
 await app.listen({ host: listenHost, port: env.PORT })
 
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info(`收到 ${signal}，退出中`)
-  // 引导态下这两个都没起（见上面那段），所以要判空
+  // 引导态下这些定时器都没起（见上面那段），所以要判空
   if (reconcileTimer !== undefined) clearInterval(reconcileTimer)
+  if (idleCullTimer !== undefined) clearInterval(idleCullTimer)
   stopSampler?.()
   await app.close()
   clearInterval(credentialCleanup)

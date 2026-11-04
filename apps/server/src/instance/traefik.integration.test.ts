@@ -41,7 +41,7 @@ describe.runIf(process.env.DSH_SECURITY_INTEGRATION === '1')('real Traefik sessi
     registerForwardAuth(backend, {
       baseDomain: 'app.example.com', consoleDomain: 'console.app.example.com',
       publicScheme: 'https', gateSecret: 'integration-gate',
-      findInstanceBySlug: async (slug) => ({ slug, ownerId: 'alice' }),
+      findInstanceBySlug: async (slug) => ({ id: `i-${slug}`, slug, ownerId: 'alice' }),
       resolveUserId: async (cookie) => cookie?.includes('dsh_cloud.session_token=alice')
         ? 'alice' : cookie?.includes('dsh_cloud.session_token=bob') ? 'bob' : undefined,
     })

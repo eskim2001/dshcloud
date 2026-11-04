@@ -9,6 +9,7 @@ import type { AdminInstanceRow, AdminUserRow } from '../db/user-repo.js'
 import type { DiskUsed } from './instance-routes.js'
 import type { Env } from '../env.js'
 import type { QuotaInput } from '../instance/provisioner.js'
+import { instanceQuotaBodySchema, platformCaps } from '../platform-caps.js'
 import {
   compareImageRefs,
   imageRepo,
@@ -85,23 +86,12 @@ function shapeImages(
   })
 }
 
-/**
- * 改实例资源配额。上限取 `instance-spec` 的 QuotaSchema（64 核 / 256GB / 4096 pids），
- * **比用户自助创建的额度宽**——用户最多 8 核 / 16GB（见 instance-routes 的 CreateBodySchema），
- * 管理员可以按合同给更高的规格。
- */
-const InstanceQuotaBodySchema = z.object({
-  cpus: z.number().positive().max(64),
-  memoryMb: z.number().int().positive().max(262_144),
-  pidsLimit: z.number().int().positive().max(4_096),
-  // 管理员能给到 1TB，比用户自助的 100GB 宽（D17）
-  diskMb: z.number().int().min(128).max(1_048_576),
-})
-
 export interface AdminRouteDeps {
   env: Env
   listUsers(): Promise<AdminUserRow[]>
   listInstances(): Promise<AdminInstanceRow[]>
+  /** 当前 DB 意图为 running 的活实例数（与 max-running 闸门同一口径）。 */
+  countRunning(): Promise<number>
   /** 全部容器的实时状态（一次 `docker ps -a`）。实例状态以它为准。 */
   listContainerStates(): Promise<ContainerStates>
   ban(userId: string, reason: string | null): Promise<boolean>
@@ -221,6 +211,7 @@ export async function registerAdminRoutes(
       }
       // 磁盘一次读全：舰队页每行都要显示它，逐行读就是 N 次调用。
       const disks = await deps.readDiskAll().catch((): undefined => undefined)
+      const caps = platformCaps(deps.env)
       return {
         instances: rows.map((row) => {
           const { status, statusText } = resolveRuntimeStatus(row, states)
@@ -235,6 +226,10 @@ export async function registerAdminRoutes(
             diskEnforced: disk?.enforced ?? false,
           }
         }),
+        // 闸门口径：DB status==='running'，不是 Docker 瞬时态
+        runningCount: await deps.countRunning(),
+        maxRunning: caps.maxRunning,
+        platformCaps: caps,
       }
     })
 
@@ -328,7 +323,7 @@ export async function registerAdminRoutes(
     /** 改实例资源配额（D17）。会重建容器——前端要提示「有几秒不可用」。 */
     scope.patch('/api/admin/instances/:id/quota', async (req: AuthedRequest, reply) => {
       const { id } = req.params as { id: string }
-      const parsed = InstanceQuotaBodySchema.safeParse(req.body)
+      const parsed = instanceQuotaBodySchema(platformCaps(deps.env)).safeParse(req.body)
       if (!parsed.success) {
         return reply.code(400).send({
           error: '参数不合法',

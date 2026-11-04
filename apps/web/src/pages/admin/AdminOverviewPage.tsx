@@ -13,14 +13,27 @@ export default function AdminOverviewPage() {
   const { t } = useTranslation()
   const instances = useQuery({ queryKey: keys.adminInstances, queryFn: listAdminInstances })
   const users = useQuery({ queryKey: keys.adminUsers, queryFn: listAdminUsers })
-  const workspaces = instances.data ?? []
+  const workspaces = instances.data?.instances ?? []
   const usedStorage = workspaces.reduce((total, item) => total + (item.diskUsedMb ?? 0), 0)
   const attention = workspaces.filter(needsAttention).length
+  const runningDetail =
+    instances.data === undefined
+      ? undefined
+      : instances.data.maxRunning > 0
+        ? `${instances.data.runningCount} / ${instances.data.maxRunning}`
+        : String(instances.data.runningCount)
 
   return (
     <AdminPage title={t('admin.overview.title')} description={t('admin.overview.description')}>
       <AdminMetricStrip items={[
-        { icon: WorkflowIcon, label: t('admin.overview.workspaces'), value: instances.isPending ? '—' : workspaces.length, detail: t('admin.overview.attention', { count: attention }) },
+        {
+          icon: WorkflowIcon,
+          label: t('admin.overview.workspaces'),
+          value: instances.isPending ? '—' : workspaces.length,
+          detail: runningDetail !== undefined
+            ? `${t('admin.overview.attention', { count: attention })} · ${t('status.running')} ${runningDetail}`
+            : t('admin.overview.attention', { count: attention }),
+        },
         { icon: UsersIcon, label: t('admin.overview.users'), value: users.isPending ? '—' : users.data?.users.length ?? 0, detail: t('admin.overview.activeUsers') },
         { icon: HardDriveIcon, label: t('admin.overview.storage'), value: instances.isPending ? '—' : formatMb(usedStorage), detail: t('admin.overview.measured') },
       ]} />

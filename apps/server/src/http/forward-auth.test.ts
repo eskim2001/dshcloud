@@ -22,7 +22,7 @@ function deps(over: Partial<ForwardAuthDeps> = {}): ForwardAuthDeps {
     publicScheme: 'https',
     gateSecret: SECRET,
     findInstanceBySlug: async (slug) =>
-      slug === 'alice' ? { slug: 'alice', ownerId: 'user-alice' } : undefined,
+      slug === 'alice' ? { id: 'i-alice', slug: 'alice', ownerId: 'user-alice' } : undefined,
     resolveUserId: async (cookie) => (cookie === 'sid=alice' ? 'user-alice' : undefined),
     ...over,
   }
@@ -155,7 +155,7 @@ describe('decideForwardAuth', () => {
       input('test.app.example.com', 'sid=alice'),
       deps({
         findInstanceBySlug: async (slug) =>
-          slug === 'test' ? { slug: 'test', ownerId: 'user-alice' } : undefined,
+          slug === 'test' ? { id: 'i-test', slug: 'test', ownerId: 'user-alice' } : undefined,
       }),
     )
     expect(r.status).toBe(200)
@@ -201,7 +201,7 @@ describe('decideForwardAuth', () => {
   it('header token 由 slug 派生，换实例就不同', async () => {
     const r = await decideForwardAuth(
       input('alice.app.example.com', 'sid=alice'),
-      deps({ findInstanceBySlug: async () => ({ slug: 'alice', ownerId: 'user-alice' }) }),
+      deps({ findInstanceBySlug: async () => ({ id: 'i-alice', slug: 'alice', ownerId: 'user-alice' }) }),
     )
     if (r.status !== 200) throw new Error('expected 200')
     expect(r.headers[GATE_TOKEN_HEADER]).not.toBe(gateToken('bob', SECRET))

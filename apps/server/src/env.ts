@@ -34,8 +34,44 @@ const EnvSchema = z.object({
 
   BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET 至少 32 字符'),
 
-  /** 控制面监听端口（只绑回环，由 Traefik 接入）。 */
+  /**
+   * 控制面监听端口。绑定地址见 `CONTROL_PLANE_LISTEN_HOST`；
+   * 生产仍应由反向代理（Traefik）对外，别把控制面业务口直接暴露公网。
+   */
   PORT: z.coerce.number().int().positive().default(3000),
+
+  /**
+   * 控制面 listen 地址。默认 `0.0.0.0`。
+   *
+   * **为什么不是 127.0.0.1**：本地开发里 Traefik 跑在容器、控制面跑在宿主。
+   * Docker Desktop 上 `host.docker.internal` 能摸到宿主回环；Linux 的 host-gateway
+   *（如 `172.17.0.1`）**到不了**宿主 loopback —— 绑 `127.0.0.1` 时容器侧 forward-auth
+   * / 控制台代理会连不上。workspace-gateway 共用此绑定（Traefik →
+   * `host.docker.internal:gatewayPort`）。需要更严时再显式设回 `127.0.0.1`（仅 Docker Desktop / 同宿主
+   * 反代场景）。见 docs/FORK.md。
+   */
+  CONTROL_PLANE_LISTEN_HOST: z.string().min(1).default('0.0.0.0'),
+
+  /**
+   * 平台级资源封顶（对齐小机）。创建 / 改档超过即拒；UI 选项也会裁到 ≤ 这些值。
+   * **全局**上限——本版不做每用户资源封顶（每用户仍只有实例**个数**配额）。
+   */
+  PLATFORM_MAX_CPUS: z.coerce.number().positive().default(2),
+  PLATFORM_MAX_MEMORY_MB: z.coerce.number().int().positive().default(2048),
+  PLATFORM_MAX_PIDS: z.coerce.number().int().positive().default(512),
+  PLATFORM_MAX_DISK_MB: z.coerce.number().int().positive().default(10_240),
+
+  /**
+   * 全局同时 `running` 的实例上限。启动（create / start / restart 从非 running 转入）前检查。
+   * **`0` = 不限制**。
+   */
+  PLATFORM_MAX_RUNNING: z.coerce.number().int().min(0).default(3),
+
+  /**
+   * 空闲回收：`running` 且 `last_active_at` 早于「现在 − N 分钟」的实例会被 stop。
+   * **`0` = 关闭**空闲回收。
+   */
+  PLATFORM_IDLE_CULL_MINUTES: z.coerce.number().int().min(0).default(45),
 
   /** 生成对外 URL 用（本地开发是 http，线上是 https）。 */
   PUBLIC_SCHEME: z.enum(['http', 'https']).default('https'),

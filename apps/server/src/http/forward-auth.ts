@@ -7,6 +7,7 @@ import { gateToken } from '../instance/gate-token.js'
 import { parse, serialize } from 'cookie'
 
 export interface InstanceLookup {
+  id: string
   slug: string
   ownerId: string
 }
@@ -22,6 +23,11 @@ export interface ForwardAuthDeps {
   findInstanceBySlug(slug: string): Promise<InstanceLookup | undefined>
   /** 从 Cookie 解析出用户；无有效会话返回 undefined。 */
   resolveUserId(cookie: string | undefined, slug?: string): Promise<string | undefined>
+  /**
+   * 授权成功后的钩子（刷新 `lastActiveAt`）。应是**节流后的 fire-and-forget**，
+   * 别在这里 await 写库——forward-auth 是热路径。
+   */
+  onAuthorized?(instance: InstanceLookup): void
 }
 
 export interface ForwardAuthInput {
@@ -101,6 +107,8 @@ export async function decideForwardAuth(
   }
 
   if (userId !== instance.ownerId) return { status: 403 }
+
+  deps.onAuthorized?.(instance)
 
   return {
     status: 200,

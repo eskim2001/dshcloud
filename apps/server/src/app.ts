@@ -3,7 +3,12 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import cookie from '@fastify/cookie'
 import type { Auth } from './auth.js'
 import type { Db } from './db/client.js'
-import { findInstanceBySlug, listInstancesByOwner, findInstanceById } from './db/instance-repo.js'
+import {
+  countRunningInstances,
+  findInstanceBySlug,
+  listInstancesByOwner,
+  findInstanceById,
+} from './db/instance-repo.js'
 import {
   listImageReleases,
   publishImageRelease,
@@ -82,6 +87,10 @@ export interface AppDeps {
    * 测试兜住（铁律 6）。见 http/route-surface.test.ts。
    */
   onRoute?: (route: { method: string | string[]; url: string }) => void
+  /**
+   * 工作空间授权成功时刷新活跃时刻（空闲回收用）。由 `index.ts` 注入节流后的 toucher。
+   */
+  onWorkspaceAuthorized?: (instanceId: string) => void
 }
 
 interface SessionUser {
@@ -240,6 +249,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const row = await findInstanceBySlug(deps.db, slug)
       return row ? resolveWorkspaceSession(deps.db, token, row.id) : undefined
     },
+    ...(deps.onWorkspaceAuthorized === undefined
+      ? {}
+      : { onAuthorized: (instance) => deps.onWorkspaceAuthorized!(instance.id) }),
   })
 
   // ② 认证端点（better-auth 自己处理登录/登出/会话）
@@ -311,6 +323,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     env: deps.env,
     listUsers: () => listUsersWithInstanceCount(deps.db),
     listInstances: () => listInstancesWithOwner(deps.db),
+    countRunning: () => countRunningInstances(deps.db),
     listContainerStates: () => deps.orchestrator.listInstanceStates(),
     readDiskAll,
     // 封禁 = 打标记 + 踢掉所有会话。少一半都封不住（见 user-repo 注释）。

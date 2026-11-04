@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button.js'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field.js'
 import { Input } from '@/components/ui/input.js'
-import type { AdminInstance } from '@/lib/api.js'
+import type { AdminInstance, PlatformCaps } from '@/lib/api.js'
 
 /** 一串数字输入 → 数值，只在**全部合法**时才真提交。 */
 export interface InstanceQuotaValue {
@@ -16,8 +16,7 @@ export interface InstanceQuotaValue {
 /**
  * 管理员改实例的资源配额。
  *
- * 上限比用户自助创建的宽（64 核 / 256 GB / 4096 进程 / 1 TB 磁盘）——管理员是"兜底的人"，
- * 不该被自助的护栏挡住。
+ * 历史上限比用户自助宽（64 核 / 256 GB / 4096 进程 / 1 TB 磁盘），但仍受平台封顶约束。
  *
  * **磁盘现在扩和缩都能在线改**（XFS project quota，见 `docs/storage/README.md`）：
  * 缩容不是拒绝，而是"已用超了新上限就拒绝再写"。
@@ -26,11 +25,13 @@ export function InstanceQuotaForm({
   item,
   pending,
   error,
+  platformCaps,
   onSubmit,
 }: {
   item: AdminInstance
   pending: boolean
   error: string | null
+  platformCaps: PlatformCaps
   onSubmit: (value: InstanceQuotaValue) => void
 }) {
   const { t } = useTranslation()
@@ -38,6 +39,11 @@ export function InstanceQuotaForm({
   const [memoryMb, setMemoryMb] = useState(String(item.memoryMb))
   const [pidsLimit, setPidsLimit] = useState(String(item.pidsLimit))
   const [diskMb, setDiskMb] = useState(String(item.diskMb))
+
+  const maxCpus = Math.min(64, platformCaps.maxCpus)
+  const maxMemoryMb = Math.min(262_144, platformCaps.maxMemoryMb)
+  const maxPids = Math.min(4_096, platformCaps.maxPids)
+  const maxDiskMb = Math.min(1_048_576, platformCaps.maxDiskMb)
 
   const value: InstanceQuotaValue = {
     cpus: Number(cpus),
@@ -48,16 +54,16 @@ export function InstanceQuotaForm({
   const valid =
     Number.isFinite(value.cpus) &&
     value.cpus > 0 &&
-    value.cpus <= 64 &&
+    value.cpus <= maxCpus &&
     Number.isInteger(value.memoryMb) &&
     value.memoryMb > 0 &&
-    value.memoryMb <= 262_144 &&
+    value.memoryMb <= maxMemoryMb &&
     Number.isInteger(value.pidsLimit) &&
     value.pidsLimit > 0 &&
-    value.pidsLimit <= 4_096 &&
+    value.pidsLimit <= maxPids &&
     Number.isInteger(value.diskMb) &&
     value.diskMb >= 128 &&
-    value.diskMb <= 1_048_576
+    value.diskMb <= maxDiskMb
   const dirty =
     value.cpus !== item.cpus ||
     value.memoryMb !== item.memoryMb ||

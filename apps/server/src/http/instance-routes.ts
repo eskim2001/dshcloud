@@ -1,9 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import {
-  ImageRefSchema,
-  InstanceSlugSchema,
-  isReservedSlug,
-} from '@dsh-cloud/instance-spec'
 import { z } from 'zod'
 import { SlugTakenError, QuotaExceededError } from '../db/instance-repo.js'
 import type { ImageReleaseRow, InstanceMetricRow, InstanceRow } from '../db/schema.js'
@@ -11,25 +6,16 @@ import { consoleLabel, type Env } from '../env.js'
 import type { ContainerUsage } from '../instance/container-stats.js'
 import type { DiskUsage } from '../instance/data-store.js'
 import { platformTags } from '../instance/image-catalog.js'
-import type { InstanceProvisioner, ProvisionInput, RemoveInput } from '../instance/provisioner.js'
-import { isImageFailure, SlugConfirmMismatchError } from '../instance/provisioner.js'
+import type { ProvisionInput, RemoveInput } from '../instance/provisioner.js'
+import {
+  isImageFailure,
+  MaxRunningExceededError,
+  SlugConfirmMismatchError,
+} from '../instance/provisioner.js'
+import { createBodySchema, platformCaps } from '../platform-caps.js'
 import { resolveRuntimeStatus, type ContainerStates } from '../instance/runtime-status.js'
 import type { LogStreamOptions } from './log-stream.js'
 import { LogsQuerySchema } from './log-stream.js'
-
-const CreateBodySchema = z.object({
-  // 保留字是**创建期命名政策**，只在这里生效——库里已有的行只做形状校验，
-  // 否则扩表会让存量实例连删都删不掉（见 DECISIONS 的域名拆分 ADR）。
-  slug: InstanceSlugSchema.refine((s) => !isReservedSlug(s), '该 slug 是保留字'),
-  cpus: z.number().positive().max(8).default(1),
-  memoryMb: z.number().int().positive().max(16_384).default(2048),
-  pidsLimit: z.number().int().positive().max(4096).default(512),
-  // 自助上限比管理员宽（D17）：这里 100GB，管理员能到 1TB。
-  // 下限 128MB —— 卷声明容量的下限（命名卷没有硬配额，这个值只记进 label）。
-  diskMb: z.number().int().min(128).max(102_400).default(10_240),
-  /** 自选版本，留空用平台默认版本。合法性（已发布 / 平台仓库）由 provisioner 判。 */
-  image: ImageRefSchema.optional(),
-})
 
 const MetricsQuerySchema = z.object({
   /** 默认 120 条 = 最近 2 小时（一分钟一条）。 */
@@ -190,6 +176,8 @@ export async function registerInstanceRoutes(
         instances: rows.map((r) => toPublicInstance(r, deps.env, states, disks?.get(r.storageKey))),
         // 连同额度一起给：列表页要显示「2 / 3」，别让用户撞上才知道
         maxInstances: await deps.readInstanceLimit(req.userId!),
+        // 平台资源封顶：创建表单据此裁选项，避免提交后再 400
+        platformCaps: platformCaps(deps.env),
       }
     })
 
@@ -207,7 +195,7 @@ export async function registerInstanceRoutes(
     })
 
     scope.post('/api/instances', async (req: AuthedRequest, reply) => {
-      const parsed = CreateBodySchema.safeParse(req.body)
+      const parsed = createBodySchema(platformCaps(deps.env)).safeParse(req.body)
       if (!parsed.success) {
         // 前端只显示 `error`——「参数不合法」在表单里帮不上忙，把第一条具体原因顶上去
         const [first] = parsed.error.issues
@@ -233,9 +221,13 @@ export async function registerInstanceRoutes(
           // exactOptionalPropertyTypes：没选版本就不带这个键，让编排层回落默认版本
           ...(image === undefined ? {} : { image }),
         })
-        return reply.code(201).send({ instance: await publicOne(req, row) })      } catch (err) {
+        return reply.code(201).send({ instance: await publicOne(req, row) })
+      } catch (err) {
         if (err instanceof SlugTakenError) return reply.code(409).send({ error: err.message })
         if (err instanceof QuotaExceededError) return reply.code(409).send({ error: err.message })
+        if (err instanceof MaxRunningExceededError) {
+          return reply.code(409).send({ error: err.message })
+        }
         // 没有默认镜像版本这类是**请求本身**的问题（D21），不是服务端故障
         if (isImageFailure(err)) return reply.code(400).send({ error: err.message })
         throw err
@@ -251,8 +243,15 @@ export async function registerInstanceRoutes(
     scope.post('/api/instances/:id/restart', async (req: AuthedRequest, reply) => {
       const row = await ownedRow(req)
       if (row === undefined) return reply.code(404).send({ error: '实例不存在' })
-      const updated = await deps.provisioner.restart(row.id)
-      return { instance: await publicOne(req, updated) }
+      try {
+        const updated = await deps.provisioner.restart(row.id)
+        return { instance: await publicOne(req, updated) }
+      } catch (err) {
+        if (err instanceof MaxRunningExceededError) {
+          return reply.code(409).send({ error: err.message })
+        }
+        throw err
+      }
     })
 
     scope.post('/api/instances/:id/stop', async (req: AuthedRequest, reply) => {
@@ -265,8 +264,15 @@ export async function registerInstanceRoutes(
     scope.post('/api/instances/:id/start', async (req: AuthedRequest, reply) => {
       const row = await ownedRow(req)
       if (row === undefined) return reply.code(404).send({ error: '实例不存在' })
-      const updated = await deps.provisioner.start(row.id)
-      return { instance: await publicOne(req, updated) }
+      try {
+        const updated = await deps.provisioner.start(row.id)
+        return { instance: await publicOne(req, updated) }
+      } catch (err) {
+        if (err instanceof MaxRunningExceededError) {
+          return reply.code(409).send({ error: err.message })
+        }
+        throw err
+      }
     })
 
     // 删除 = **永久**（数据一起删）。必须回填子域名挡误操作；留下的只有主机名（见 provisioner.remove）

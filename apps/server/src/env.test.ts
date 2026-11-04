@@ -12,6 +12,33 @@ function source(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   }
 }
 
+describe('平台封顶 / 并发 / 空闲回收默认值', () => {
+  it('未配置时落到小机默认值', () => {
+    const env = loadEnv(source())
+    expect(env.CONTROL_PLANE_LISTEN_HOST).toBe('0.0.0.0')
+    expect(env.PLATFORM_MAX_CPUS).toBe(2)
+    expect(env.PLATFORM_MAX_MEMORY_MB).toBe(2048)
+    expect(env.PLATFORM_MAX_PIDS).toBe(512)
+    expect(env.PLATFORM_MAX_DISK_MB).toBe(10_240)
+    expect(env.PLATFORM_MAX_RUNNING).toBe(3)
+    expect(env.PLATFORM_IDLE_CULL_MINUTES).toBe(45)
+  })
+
+  it('PLATFORM_MAX_RUNNING=0 / PLATFORM_IDLE_CULL_MINUTES=0 合法（= 关闭）', () => {
+    const env = loadEnv(
+      source({ PLATFORM_MAX_RUNNING: '0', PLATFORM_IDLE_CULL_MINUTES: '0' }),
+    )
+    expect(env.PLATFORM_MAX_RUNNING).toBe(0)
+    expect(env.PLATFORM_IDLE_CULL_MINUTES).toBe(0)
+  })
+
+  it('CONTROL_PLANE_LISTEN_HOST 可改回回环', () => {
+    expect(loadEnv(source({ CONTROL_PLANE_LISTEN_HOST: '127.0.0.1' })).CONTROL_PLANE_LISTEN_HOST).toBe(
+      '127.0.0.1',
+    )
+  })
+})
+
 describe('控制台可使用独立域名', () => {
   it('严格子域放行', () => {
     expect(loadEnv(source()).CONSOLE_DOMAIN).toBe('console.lvh.me')
