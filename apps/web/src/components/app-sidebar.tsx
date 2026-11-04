@@ -102,7 +102,7 @@ export function AppSidebar() {
             <SidebarMenuButton className="h-12 justify-start gap-2.5 px-3 transition-colors duration-150 ease-out [&_svg]:!h-9 [&_svg]:!w-11" size="lg" render={<NavLink to="/home" onClick={closeMobileSidebar} />}>
               <BrandMark className="shrink-0 transition-transform duration-300 ease-out group-hover/menu-button:-translate-y-px group-hover/menu-button:scale-[1.03]" />
               <div className="grid text-left leading-tight">
-                <span className="truncate text-lg font-semibold tracking-tight text-foreground">
+                <span className="truncate text-lg font-medium tracking-[-0.03em] text-foreground">
                   dsh<span className="text-muted-foreground">cloud.</span>
                 </span>
               </div>

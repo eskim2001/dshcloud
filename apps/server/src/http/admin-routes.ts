@@ -2,6 +2,7 @@ import type { Readable } from 'node:stream'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { ImageRefSchema } from '@dsh-cloud/instance-spec'
 import { z } from 'zod'
+import { AccountExistsError, canonicalLoginEmail } from '../account.js'
 import type { ImageCatalogRow, ImageReleaseRow } from '../db/schema.js'
 import type { InvitationRow } from '../db/invitation-repo.js'
 import { INVITE_TTL_HOURS } from '../invitation.js'
@@ -23,6 +24,16 @@ import type { LogStreamOptions } from './log-stream.js'
 import { LogsQuerySchema } from './log-stream.js'
 import { streamImagePull } from './pull-stream.js'
 
+/**
+ * 管理员直接建号。`account` 是邮箱或用户名（用户名会收成 `<用户名>@<父域>`）。
+ * 密码口径与邀请兑换、引导建号一致：至少 8 位。
+ */
+const CreateUserBodySchema = z.object({
+  account: z.string().trim().min(1).max(254),
+  password: z.string().min(8, '密码至少 8 位').max(200),
+  name: z.string().trim().max(80).optional(),
+  role: z.enum(['user', 'admin']).optional(),
+})
 const BanBodySchema = z.object({ reason: z.string().max(200).optional() })
 const QuotaBodySchema = z.object({ quota: z.number().int().min(0).max(100).nullable() })
 const RoleBodySchema = z.object({ role: z.enum(['user', 'admin']) })
@@ -147,6 +158,17 @@ export interface AdminRouteDeps {
   getSessionUser(req: FastifyRequest): Promise<{ id: string; role: string } | undefined>
 
   /**
+   * 直接建号（设账密）。邮箱已被占时抛 `AccountExistsError`。
+   * 路由负责把「邮箱或用户名」收成规范邮箱后再进来。
+   */
+  createUser(input: {
+    email: string
+    password: string
+    name?: string
+    role?: 'user' | 'admin'
+  }): Promise<{ id: string; email: string }>
+
+  /**
    * 生成一条邀请链接。**明文 token 只在这一刻存在**——库里存的是哈希，
    * 调用方（路由）必须当场把它返回给 owner，之后再也要不回来。
    *
@@ -199,6 +221,32 @@ export async function registerAdminRoutes(
       users: await deps.listUsers(),
       maxInstancesPerUser: deps.env.MAX_INSTANCES_PER_USER,
     }))
+
+    scope.post('/api/admin/users', async (req, reply) => {
+      const parsed = CreateUserBodySchema.safeParse(req.body)
+      if (!parsed.success) {
+        const [first] = parsed.error.issues
+        return reply.code(400).send({ error: first?.message ?? '参数不合法' })
+      }
+      const email = canonicalLoginEmail(parsed.data.account, deps.env.BASE_DOMAIN)
+      if (email === undefined) {
+        return reply.code(400).send({ error: '邮箱或用户名不合格' })
+      }
+      try {
+        const user = await deps.createUser({
+          email,
+          password: parsed.data.password,
+          ...(parsed.data.name ? { name: parsed.data.name } : {}),
+          ...(parsed.data.role === undefined ? {} : { role: parsed.data.role }),
+        })
+        return reply.code(201).send({ user })
+      } catch (err) {
+        if (err instanceof AccountExistsError) {
+          return reply.code(409).send({ error: '账号已存在' })
+        }
+        throw err
+      }
+    })
 
     scope.get('/api/admin/instances', async (req) => {
       const rows = await deps.listInstances()

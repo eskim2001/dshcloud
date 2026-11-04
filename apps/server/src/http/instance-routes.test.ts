@@ -454,6 +454,23 @@ describe('实例面：创建', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
+  it('控制台就是父域时，父域首段不再被当成可抢的 label', async () => {
+    const create = vi.fn(async (input: { slug: string; ownerId: string }) =>
+      row({ slug: input.slug, ownerId: input.ownerId }),
+    )
+    const { app } = await build(ME, {
+      env: { ...env, BASE_DOMAIN: 'workspace.example.com', CONSOLE_DOMAIN: 'workspace.example.com' },
+      provisioner: { create },
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      payload: { slug: 'workspace' },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(create).toHaveBeenCalled()
+  })
+
   it('合法请求 → 201，owner 由会话决定而不是请求体', async () => {
     const create = vi.fn(async (input: { slug: string; ownerId: string }) =>
       row({ slug: input.slug, ownerId: input.ownerId }),

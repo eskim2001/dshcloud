@@ -1,27 +1,36 @@
-# 控制台自己的域名（登录页 / API）——开发态指向 Vite。
+# 控制台（登录 / 管理台 / API）——开发态指向 Vite。
+#
+# 规范入口是父域顶点 `lvh.me`，管理路径是同域 `/admin`
+# （产品形态：`https://<父域>/admin`）。实例子域是 `<slug>.lvh.me`，
+# 比顶点多一个标签，Host 规则对不上，抢不走控制台。priority 1000 是纵深。
+#
+# `console.lvh.me` 只做兼容跳转，不再是唯一管理入口。`console` 仍是保留 slug。
 #
 # file provider 在 directory 模式下**只读 yml/yaml/toml**，json 会被静默忽略。
 #
-# 用 console.lvh.me 而不是 localhost：Chrome 不认 `Domain=.localhost`，
-# 跨子域登录态在浏览器里测不出来。
-#
-# 也**不能**用 lvh.me 本身：那样控制台主机名落在实例命名空间里（`<slug>.lvh.me`），
-# 可以被租户抢注成同长度的 router 规则。控制台必须是实例拿不到的 label。
-#
-# *.lvh.me 是公共通配 DNS（全网解析到 127.0.0.1），不用起本地 DNS 容器，
-# 也就不会和 Clash 之类占用 :53 的程序撞车。
-#
+# *.lvh.me（含顶点 lvh.me）是公共通配 DNS，解析到 127.0.0.1。
 # 走 websecure（:443）+ `tls: {}`：不配证书，用 Traefik 内置的默认自签证书。
 # router 上的 tls 必须显式写，entryPoint 开了 TLS 不代表 router 自动有。
 http:
+  middlewares:
+    console-alias-redirect:
+      redirectRegex:
+        regex: "^https?://console\\.lvh\\.me(.*)"
+        replacement: "https://lvh.me${1}"
+        permanent: false
   routers:
     platform-web:
-      rule: Host(`console.lvh.me`)
-      # 显式优先级：Traefik 默认按规则长度排序，长度相同则行为未定义。
-      # 实例规则（`Host(`<slug>.lvh.me`)`）长度随 slug 变化，不能靠"刚好更长"。
-      # 有这条，即使 slug 撞上控制台 label，控制台也稳赢。见 DECISIONS 的域名拆分 ADR。
+      rule: Host(`lvh.me`)
+      # 显式优先级：不跟实例规则比长度。顶点 Host 与 `<slug>.lvh.me` 本来就不同形。
       priority: 1000
       service: platform-web
+      entryPoints: [websecure]
+      tls: {}
+    platform-console-alias:
+      rule: Host(`console.lvh.me`)
+      priority: 1000
+      service: noop@internal
+      middlewares: [console-alias-redirect]
       entryPoints: [websecure]
       tls: {}
   services:

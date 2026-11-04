@@ -112,19 +112,20 @@ describe('platform.yml 的不变量', () => {
     import.meta.url,
   )
 
-  it('控制台 router 显式设 priority，且主机名首段是保留字', async () => {
+  it('顶点控制台 priority 显式，别名主机的首段是保留字', async () => {
     const doc = parseYaml(await readFile(PLATFORM_YML, 'utf8')) as {
-      http: { routers: Record<string, { rule: string; priority?: number }> }
+      http: { routers: Record<string, { rule: string; priority?: number; middlewares?: string[] }> }
     }
-    const routers = Object.values(doc.http.routers)
-    expect(routers).toHaveLength(1)
-
+    const primary = doc.http.routers['platform-web']
+    const alias = doc.http.routers['platform-console-alias']
+    expect(primary?.rule).toBe('Host(`lvh.me`)')
+    expect(alias?.rule).toBe('Host(`console.lvh.me`)')
     // 显式优先级：不依赖 Traefik 的「规则长度相同则行为未定义」平手判定
-    expect(routers[0]?.priority).toBeGreaterThan(0)
-
-    const host = /Host\(`([^`]+)`\)/.exec(routers[0]?.rule ?? '')?.[1]
-    expect(host).toBeDefined()
-    // 控制台 label 必须在保留字表里——它是「租户抢不到这个主机名」的第一道防线
-    expect(RESERVED_SLUGS).toContain(host!.split('.')[0])
+    expect(primary?.priority).toBeGreaterThan(0)
+    expect(alias?.priority).toBeGreaterThan(0)
+    // 顶点不是 `<slug>.lvh.me`。别名的首段必须在保留字里，实例抢不到这条跳转。
+    expect(`Host(\`alice.lvh.me\`)`).not.toBe(primary?.rule)
+    expect(RESERVED_SLUGS).toContain('console')
+    expect(primary?.middlewares).toBeUndefined()
   })
 })

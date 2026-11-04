@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { CircleCheckIcon, ShieldCheckIcon, UsersIcon } from 'lucide-react'
 import { AdminMetricStrip, AdminPage, AdminTableSection } from '@/components/admin/admin-page.js'
 import { BanButton } from '@/components/admin/ban-button.js'
+import { CreateUserPanel } from '@/components/admin/create-user-panel.js'
 import { InvitePanel } from '@/components/admin/invite-panel.js'
 import { RoleButton } from '@/components/admin/role-button.js'
 import { UserQuotaEditor } from '@/components/admin/user-quota-editor.js'
@@ -68,6 +69,8 @@ export default function AdminUsersPage() {
 
   return (
     <AdminPage title={t('admin.users.title')} description={t('admin.users.description')}>
+      <CreateUserPanel />
+
       <AdminMetricStrip items={[
         { icon: UsersIcon, label: t('admin.users.total'), value: allUsers.length },
         { icon: CircleCheckIcon, label: t('admin.users.active'), value: activeUsers },

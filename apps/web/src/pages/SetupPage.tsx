@@ -46,9 +46,10 @@ export default function SetupPage() {
     .replace(/^https?:\/\//u, '')
     .replace(/[/?#].*/u, '')
     .replace(/\.$/u, '')
-  const consoleDomain = typedConsoleDomain.trim().toLowerCase() || `console.${domain}`
+  // 留空 = 控制台就是父域，管理入口在 /admin。填了才用另一台主机。
+  const consoleDomain = typedConsoleDomain.trim().toLowerCase() || domain
   const shapeOk = /^[a-z0-9.-]+$/u.test(domain) && domain.includes('.')
-    && /^[a-z0-9.-]+$/u.test(consoleDomain) && consoleDomain.includes('.') && consoleDomain !== domain
+    && /^[a-z0-9.-]+$/u.test(consoleDomain) && consoleDomain.includes('.')
 
   const probe = useDomainProbe(token, domain, consoleDomain, shapeOk)
   useEffect(() => { setOverride(false) }, [domain, consoleDomain])
@@ -152,12 +153,13 @@ export default function SetupPage() {
               id="consoleDomain"
               value={typedConsoleDomain}
               onChange={(e) => setTypedConsoleDomain(e.target.value)}
-              placeholder={domain ? `console.${domain}` : 'console.example.com'}
+              placeholder={domain || 'example.com'}
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
               className="login-input"
             />
+            <FieldDescription className="text-xs text-muted-foreground">{t('setup.consoleDomainHint')}</FieldDescription>
             <DomainStatus probe={probe} domain={domain} consoleDomain={consoleDomain} host={host} isIp={isIp} />
           </Field>
         </FieldGroup>

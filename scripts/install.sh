@@ -654,15 +654,15 @@ start_services() {
   # 别拿 .env 判 —— 装机不写域名，那两项恒为空，照它判会把已配置的机器当成引导态、
   # 打印一条早就作废的指引。
   if [ -f "$STATE_DIR/traefik/dynamic/platform.yml" ]; then
-    printf '  域名　　　：已配置（存在平台的库里，控制台在 console.<你当初填的那个域名>）\n'
+    printf '  域名　　　：已配置（存在平台的库里，管理入口是 https://<控制台域名>/admin）\n'
     printf '  首次访问时 ACME 可能还在签发证书（几秒到一分钟），报证书错就等一下再刷。\n'
   else
     printf '  \033[1m下一步：用浏览器打开下面这条链接，在那里建管理员账号、填域名。\033[0m\n\n'
     printf '    http://%s:%s/setup?token=%s\n' "$(machine_address)" "$CONTROL_PORT" "$SETUP_TOKEN"
     printf '\n'
     printf '  平台上**还没有账号、也没有域名**。这个页面是此刻唯一的入口，token 是它唯一的凭证（一次性）。\n'
-    printf '  账号和域名都在那一页里填。填完它会立刻关掉这个入口并重启，控制台落在 console.<你填的域名>。\n'
-    printf '  填之前先把泛解析 *.<你填的域名> 指向这台机器 —— 否则证书签不下来。\n'
+    printf '  账号和域名都在那一页里填。默认控制台就是父域本身，填完重启后打开 https://<父域>/admin。\n'
+    printf '  填之前先把父域的 A 记录和泛解析 *.<父域> 指向这台机器 —— 否则证书签不下来。\n'
   fi
   printf '\n'
   printf '  下一步：登录 → 管理台「镜像管理」把实例镜像设为默认 → 建实例。\n'

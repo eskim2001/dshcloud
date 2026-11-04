@@ -1,7 +1,31 @@
+import { z } from 'zod'
 import type { Auth } from './auth.js'
 
 /**
- * 平台建号的**唯一**入口。seed 和邀请兑换都用它。
+ * 登录名：邮箱，或一段用户名。
+ *
+ * better-auth 的口令登录只认邮箱。用户名因此落成 `<用户名>@<父域>`——
+ * 这就是之后登录框里要填的地址，调用方应把算出来的邮箱展示给管理员。
+ * 用户名只允许字母数字和 `.` `_` `-`，2–32 位，不能以符号开头或结尾。
+ */
+const UsernameSchema = z
+  .string()
+  .regex(/^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])$/u, '用户名只允许字母、数字、点、下划线和短横线，2–32 位')
+
+export function canonicalLoginEmail(account: string, baseDomain: string): string | undefined {
+  const raw = account.trim().toLowerCase()
+  if (raw === '') return undefined
+  if (raw.includes('@')) {
+    const parsed = z.string().email().max(254).safeParse(raw)
+    return parsed.success ? parsed.data : undefined
+  }
+  if (baseDomain === '' || !UsernameSchema.safeParse(raw).success) return undefined
+  const email = `${raw}@${baseDomain}`
+  return email.length <= 254 ? email : undefined
+}
+
+/**
+ * 平台建号的**唯一**入口。seed、邀请兑换、管理员直接设账密都用它。
  *
  * 为什么不走 better-auth 自己的 HTTP 路由：
  *  - `sign-up/email` 在 `disableSignUp` 之后**闭死**（见 auth.ts），而 seed 恰恰要在

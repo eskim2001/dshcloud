@@ -17,7 +17,7 @@ describe('setup 端点', () => {
     expect(response.statusCode).toBe(200)
     expect(saved).toEqual([{ baseDomain: 'example.com', consoleDomain: 'console.other.net' }])
   })
-  it.each(['example.com', 'evil.test/path', 'https://console.other.net', ''])('拒绝非法控制台域名 %j，且不建管理员', async consoleDomain => {
+  it.each(['evil.test/path', 'https://console.other.net', ''])('拒绝非法控制台域名 %j，且不建管理员', async consoleDomain => {
     app = await build()
     expect((await post(body({ consoleDomain }))).statusCode).toBe(400)
     expect(created).toHaveLength(0)
@@ -177,16 +177,16 @@ describe('setup 端点', () => {
     expect(saved).toEqual([])
   })
 
-  it('通过：建号 → 算 console.<父域> → 落库 → 安排重启', async () => {
+  it('通过：建号 → 控制台默认就是父域 → 落库 → 安排重启', async () => {
     app = await build()
     const res = await post(body())
     expect(res.statusCode).toBe(200)
-    expect(res.json().consoleDomain).toBe('console.example.com')
+    expect(res.json().consoleDomain).toBe('example.com')
     expect(res.json().email).toBe('admin@example.com')
     // 回结构化结果（不是一句中文）：文案归双语的 UI 组
     expect(res.json().dns).toEqual({ probe: expect.stringContaining('.example.com'), resolved: true, workspaceResolved: true, consoleResolved: true })
     expect(created).toEqual([{ email: 'admin@example.com', password: 'correct-horse' }])
-    expect(saved).toEqual([{ baseDomain: 'example.com', consoleDomain: 'console.example.com' }])
+    expect(saved).toEqual([{ baseDomain: 'example.com', consoleDomain: 'example.com' }])
 
     // 重启挂在响应的 finish 上 —— 注入的响应跑完，回调应当已经触发
     await new Promise((r) => setTimeout(r, 10))
@@ -250,7 +250,7 @@ describe('setup 端点', () => {
       app = await build()
       const res = await probe('baseDomain=example.com')
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ resolved: true, consoleDomain: 'console.example.com', workspaceResolved: true, consoleResolved: true })
+      expect(res.json()).toEqual({ resolved: true, consoleDomain: 'example.com', workspaceResolved: true, consoleResolved: true })
     })
 
     it('独立控制台未解析时，泛解析成功不能使检查通过', async () => {
@@ -271,12 +271,19 @@ describe('setup 端点', () => {
       expect(result.json()).toMatchObject({ resolved: false, workspaceResolved: false, consoleResolved: true })
     })
 
-    it('非法或相同控制台域名在 DNS 查询前拒绝', async () => {
+    it('父域本身当控制台主机名是合法的，会去查 DNS', async () => {
+      let queries = 0
+      app = await build({ resolveSubdomain: async () => { queries++; return ['203.0.113.7'] } })
+      const res = await probe('baseDomain=example.com&consoleDomain=example.com')
+      expect(res.statusCode).toBe(200)
+      expect(res.json().consoleDomain).toBe('example.com')
+      expect(queries).toBeGreaterThan(0)
+    })
+
+    it('非法控制台域名在 DNS 查询前拒绝', async () => {
       let queries = 0
       app = await build({ resolveSubdomain: async () => { queries++; return [] } })
-      for (const consoleDomain of ['example.com', 'bad/path']) {
-        expect((await probe(`baseDomain=example.com&consoleDomain=${encodeURIComponent(consoleDomain)}`)).statusCode).toBe(400)
-      }
+      expect((await probe(`baseDomain=example.com&consoleDomain=${encodeURIComponent('bad/path')}`)).statusCode).toBe(400)
       expect(queries).toBe(0)
     })
 

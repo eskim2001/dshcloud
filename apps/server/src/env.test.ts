@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadEnv, withPlatformDomains } from './env.js'
+import { consoleLabel, hostnameOf, isPlatformHost, loadEnv, withPlatformDomains } from './env.js'
 
 function source(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -39,13 +39,25 @@ describe('平台封顶 / 并发 / 空闲回收默认值', () => {
   })
 })
 
-describe('控制台可使用独立域名', () => {
+describe('控制台可使用独立域名，也可以就是父域', () => {
   it('严格子域放行', () => {
     expect(loadEnv(source()).CONSOLE_DOMAIN).toBe('console.lvh.me')
   })
 
-  it('父域本身被拒——父域不当主机名用', () => {
-    expect(() => loadEnv(source({ CONSOLE_DOMAIN: 'lvh.me' }))).toThrow(/不能.*相同/)
+  it('父域本身合法：同域入口，顶点不是实例子域', () => {
+    const env = loadEnv(source({ CONSOLE_DOMAIN: 'lvh.me' }))
+    expect(env.CONSOLE_DOMAIN).toBe('lvh.me')
+    expect(consoleLabel(env)).toBe('')
+    expect(isPlatformHost(env, 'lvh.me')).toBe(true)
+    expect(isPlatformHost(env, 'lvh.me:443')).toBe(true)
+    expect(isPlatformHost(env, 'console.lvh.me')).toBe(true)
+    expect(isPlatformHost(env, 'alice.lvh.me')).toBe(false)
+  })
+
+  it('控制台是父域下的单标签时，那个标签不能当 slug', () => {
+    const env = loadEnv(source({ BASE_DOMAIN: 'app.example.com', CONSOLE_DOMAIN: 'portal-x.app.example.com' }))
+    expect(consoleLabel(env)).toBe('portal-x')
+    expect(hostnameOf('portal-x.app.example.com:443')).toBe('portal-x.app.example.com')
   })
 
   it('显式配置的独立控制台主机名放行', () => {

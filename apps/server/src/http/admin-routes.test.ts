@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { AccountExistsError } from '../account.js'
 import type { Env } from '../env.js'
 import { RegistryError } from '../instance/image-sync.js'
 import { ImageRejectedError, NoRollbackError } from '../instance/provisioner.js'
@@ -15,6 +16,8 @@ const env = {
   PLATFORM_MAX_DISK_MB: 10_240,
   PLATFORM_MAX_RUNNING: 3,
   PLATFORM_IDLE_CULL_MINUTES: 45,
+  BASE_DOMAIN: 'app.example.com',
+  CONSOLE_DOMAIN: 'app.example.com',
 } as Env
 
 const ADMIN = { id: 'admin-1', role: 'admin' }
@@ -34,6 +37,7 @@ const release = (ref: string, isDefault = false) => ({
  */
 const EXPECTED_ROUTES = [
   { method: 'GET', url: '/api/admin/users' },
+  { method: 'POST', url: '/api/admin/users' },
   { method: 'GET', url: '/api/admin/instances' },
   { method: 'POST', url: '/api/admin/users/:id/ban' },
   { method: 'POST', url: '/api/admin/users/:id/unban' },
@@ -114,6 +118,7 @@ async function build(
     rollbackInstanceImage: async () => true,
     streamLogs: async () => {},
     getSessionUser: async () => session,
+    createUser: async (input) => ({ id: 'created', email: input.email }),
     // 邀请：默认能生成。用例自己覆盖「邮箱已存在 / 已有待接受邀请」
     createInvite: async () => ({
       ok: true as const,
@@ -165,6 +170,7 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     const setDefaultImage = vi.fn(async () => true)
     const syncImages = vi.fn(async () => ({ count: 0, skipped: 0, syncedAt: new Date(0) }))
     const pullImageStream = vi.fn(async () => Readable.from([]))
+    const createUser = vi.fn(async (input: { email: string }) => ({ id: 'created', email: input.email }))
     const { app } = await build(USER, {
       ban,
       setQuota,
@@ -177,6 +183,7 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
       setDefaultImage,
       syncImages,
       pullImageStream,
+      createUser,
     })
     for (const route of ATTACKS) {
       await call(app, route)
@@ -192,6 +199,7 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     expect(setDefaultImage).not.toHaveBeenCalled()
     expect(syncImages).not.toHaveBeenCalled()
     expect(pullImageStream).not.toHaveBeenCalled()
+    expect(createUser).not.toHaveBeenCalled()
   })
 
   it('普通账号不能用请求体和身份头把自己提升为管理员', async () => {
@@ -777,5 +785,77 @@ describe('平台管理面：镜像目录与三态（D23）', () => {
       payload: { ref: 'dsh-instance:0.9.9_1' },
     })
     expect(notPublished.statusCode).toBe(404)
+  })
+})
+
+describe('管理员直接设账密建号', () => {
+  it('邮箱建号 → 201，角色缺省是 user', async () => {
+    const createUser = vi.fn(async (input: { email: string; role?: string }) => ({
+      id: 'u-1',
+      email: input.email,
+    }))
+    const { app } = await build(ADMIN, { createUser })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/users',
+      payload: { account: 'Ada@App.Example.com', password: 'correct-horse', name: 'Ada' },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().user.email).toBe('ada@app.example.com')
+    expect(createUser).toHaveBeenCalledWith({
+      email: 'ada@app.example.com',
+      password: 'correct-horse',
+      name: 'Ada',
+    })
+  })
+
+  it('用户名收成 <用户名>@父域，并带上角色', async () => {
+    const createUser = vi.fn(async (input: { email: string }) => ({ id: 'u-2', email: input.email }))
+    const { app } = await build(ADMIN, { createUser })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/users',
+      payload: { account: 'Ada_01', password: 'correct-horse', role: 'admin' },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(createUser).toHaveBeenCalledWith({
+      email: 'ada_01@app.example.com',
+      password: 'correct-horse',
+      role: 'admin',
+    })
+  })
+
+  it('密码太短、用户名不像话 → 400，且不建号', async () => {
+    const createUser = vi.fn()
+    const { app } = await build(ADMIN, { createUser })
+    const short = await app.inject({
+      method: 'POST',
+      url: '/api/admin/users',
+      payload: { account: 'ada@app.example.com', password: 'short' },
+    })
+    expect(short.statusCode).toBe(400)
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/admin/users',
+      payload: { account: 'a', password: 'correct-horse' },
+    })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json().error).toMatch(/不合格/)
+    expect(createUser).not.toHaveBeenCalled()
+  })
+
+  it('邮箱已被占 → 409', async () => {
+    const { app } = await build(ADMIN, {
+      createUser: async () => {
+        throw new AccountExistsError('ada@app.example.com')
+      },
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/users',
+      payload: { account: 'ada@app.example.com', password: 'correct-horse' },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toBe('账号已存在')
   })
 })

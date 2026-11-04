@@ -62,7 +62,7 @@ pnpm install
 pnpm dev
 ```
 
-一条命令起全套：预检（依赖 / 端口 / Docker daemon）→ 生成 `apps/server/.env.local`（含两个随机 secret）→ 起 Postgres + 入口（`docker/compose/local.yml`）→ 迁移 → seed → 起控制面（`--watch`）和管理台。完了打开 `https://console.lvh.me`，用 `admin@lvh.me` / `dsh-cloud-dev` 登录（红锁点「继续访问」，见 D26）。
+一条命令起全套：预检（依赖 / 端口 / Docker daemon）→ 生成 `apps/server/.env.local`（含两个随机 secret）→ 起 Postgres + 入口（`docker/compose/local.yml`）→ 迁移 → seed → 起控制面（`--watch`）和管理台。完了打开 `https://lvh.me/admin`，用 `admin@lvh.me` / `dsh-cloud-dev` 登录（红锁点「继续访问」，见 D26）。`console.lvh.me` 会跳到顶点。
 
 Ctrl-C 只停应用，入口和 Postgres 留着；`pnpm dev:down` 停它们，清库要加 `-v`。脚本本身在 `scripts/dev.mjs`。改了 `.env.local` 想让它生效，重跑 `pnpm dev` 即可（它只校验、不改已有文件）。
 

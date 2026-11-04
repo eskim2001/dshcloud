@@ -142,7 +142,9 @@ const projectPlatform = async (consoleDomain: string | undefined): Promise<void>
   const removed = await projectPlatformRoutes({
     dir: dirname(routesConfigPath),
     selfPort: env.PORT,
-    ...(consoleDomain === undefined ? {} : { consoleDomain }),
+    ...(consoleDomain === undefined
+      ? {}
+      : { consoleDomain, ...(env.BASE_DOMAIN === '' ? {} : { baseDomain: env.BASE_DOMAIN }) }),
     entryPoint: env.TRAEFIK_ENTRYPOINT,
     httpEntryPoint: platformRoutesHttpEntryPoint,
     upstreamHost: env.INSTANCE_UPSTREAM_HOST,

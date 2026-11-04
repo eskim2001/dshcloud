@@ -78,7 +78,9 @@ export default function LoginPage() {
 
         <main className="login-main">
           <div className="login-form-wrap">
+            <p className="login-kicker">{t('login.kicker')}</p>
             <h2 className="login-title">{t('login.title')}</h2>
+            <p className="login-entry">{t('login.entryHint')}</p>
 
             {demo !== null && (
               <button type="button" onClick={fillDemo} className="login-demo">

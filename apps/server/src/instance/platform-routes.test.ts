@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 import { RESERVED_SLUGS } from '@dsh-cloud/instance-spec'
+import { CONSOLE_LABEL } from '../env.js'
 import {
   buildBootstrapConfig,
   buildConsoleConfig,
@@ -66,6 +67,49 @@ describe('控制台 router 的不变量', () => {
       'http://127.0.0.1:3000',
     )
   })
+
+  it('父域顶点：实例 Host 对不上控制台，console. 只是跳回顶点的别名', () => {
+    const apex = 'example.com'
+    const cfg = buildConsoleConfig({
+      consoleDomain: apex,
+      baseDomain: apex,
+      selfPort: 3000,
+      entryPoint: 'websecure',
+      tls: { certResolver: 'le' },
+    }) as any
+
+    const primary = cfg.http.routers['platform-web']
+    expect(primary.rule).toBe('Host(`example.com`)')
+    expect(primary.priority).toBe(1000)
+    expect(primary).not.toHaveProperty('middlewares')
+
+    // `<slug>.example.com` 不可能等于顶点。即便 slug 取父域的首段也多一个标签。
+    for (const slug of ['alice', 'example', 'console']) {
+      expect(`Host(\`${slug}.${apex}\`)`).not.toBe(primary.rule)
+    }
+
+    const alias = cfg.http.routers['platform-console-alias']
+    expect(alias.rule).toBe(`Host(\`${CONSOLE_LABEL}.${apex}\`)`)
+    expect(alias.priority).toBe(1000)
+    expect(alias.service).toBe('noop@internal')
+    expect(alias.middlewares).toEqual(['console-alias-redirect'])
+    expect(RESERVED_SLUGS).toContain(CONSOLE_LABEL)
+    expect(cfg.http.middlewares['console-alias-redirect'].redirectRegex.replacement).toBe(
+      'https://example.com${1}',
+    )
+  })
+
+  it('控制台仍是子域时不另写别名（那台主机自己就是规范入口）', () => {
+    const cfg = buildConsoleConfig({
+      consoleDomain: 'console.example.com',
+      baseDomain: 'example.com',
+      selfPort: 3000,
+      entryPoint: 'websecure',
+      tls: {},
+    }) as any
+    expect(Object.keys(cfg.http.routers)).toEqual(['platform-web'])
+    expect(cfg.http.middlewares).toBeUndefined()
+  })
 })
 
 describe('引导口与跳转的形态', () => {
@@ -116,12 +160,21 @@ describe('projectPlatformRoutes：按状态对齐，且幂等', () => {
   it('已配置：写控制台与跳转，**摘掉引导口**（暴露当场关闭）', async () => {
     await writeFile(join(dir, 'bootstrap.yml'), 'stale: true')
 
-    const removed = await projectPlatformRoutes({ dir, ...BASE, consoleDomain: 'console.example.com' })
+    const removed = await projectPlatformRoutes({
+      dir,
+      ...BASE,
+      consoleDomain: 'example.com',
+      baseDomain: 'example.com',
+    })
 
     expect(existsSync(join(dir, 'bootstrap.yml'))).toBe(false)
     expect(removed).toEqual(['bootstrap.yml'])
     const console = await readYaml(dir, 'platform.yml')
-    expect(console.http.routers['platform-web'].rule).toBe('Host(`console.example.com`)')
+    expect(console.http.routers['platform-web'].rule).toBe('Host(`example.com`)')
+    expect(console.http.routers['platform-console-alias'].rule).toBe('Host(`console.example.com`)')
+    expect(console.http.middlewares['console-alias-redirect'].redirectRegex.replacement).toBe(
+      'https://example.com${1}',
+    )
     expect((await readYaml(dir, 'redirect.yml')).http.routers['http-redirect'].service).toBe(
       'noop@internal',
     )

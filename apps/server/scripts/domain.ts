@@ -1,5 +1,6 @@
 /**
- * 改平台域名：控制台落在 `console.<父域>`，实例子域挂在 `<父域>` 下面。
+ * 改平台域名：控制台默认就是父域顶点（管理入口 `/admin`），实例子域挂在它下面。
+ * 第三个参数可以改成别的控制台主机名（例如旧的 `console.<父域>`）。
  *
  * **写的是 DB**（`platform_setting` 那一行），**不碰 `.env`** —— 域名只有一个家，就是那张表。
  * 装机不往环境变量里写域名（见 `install.sh` 的 `write_env`），所以这条命令同时是两件事：
@@ -20,7 +21,7 @@ import { randomBytes } from 'node:crypto'
 import { resolve4 } from 'node:dns/promises'
 import { createDb } from '../src/db/client.js'
 import { getPlatformSetting, savePlatformDomains } from '../src/db/platform-setting-repo.js'
-import { CONSOLE_LABEL, loadEnv } from '../src/env.js'
+import { loadEnv } from '../src/env.js'
 import { DomainSchema } from '../src/domain.js'
 
 function usage(message: string): never {
@@ -28,8 +29,8 @@ function usage(message: string): never {
     `domain 无法执行：${message}\n\n` +
       '用法：\n' +
       '  docker compose -f /opt/dsh-cloud/prod.yml run --rm control-plane domain <父域>\n\n' +
-      '父域是**父**域名（如 example.com），不是控制台自己的主机名 ——\n' +
-      `控制台会落在 ${CONSOLE_LABEL}.<父域>，每个工作空间各占 <子域名>.<父域>。`,
+      '父域是**父**域名（如 example.com）。默认控制台就是这个顶点，管理入口是 /admin。\n' +
+      '每个工作空间各占 <子域名>.<父域>。可选第三个参数指定另一台控制台主机。',
   )
   process.exit(1)
 }
@@ -41,8 +42,8 @@ async function main(): Promise<void> {
 
   if (baseDomain === '') usage('没给父域')
   if (!DomainSchema.safeParse(baseDomain).success) usage('父域格式不合法')
-  const consoleDomain = (process.argv[3] ?? `${CONSOLE_LABEL}.${baseDomain}`).trim()
-  if (!DomainSchema.safeParse(consoleDomain).success || consoleDomain === baseDomain) usage('控制台域名格式不合法')
+  const consoleDomain = (process.argv[3] ?? baseDomain).trim()
+  if (!DomainSchema.safeParse(consoleDomain).success) usage('控制台域名格式不合法')
 
   const env = loadEnv()
   const { db, client } = createDb(env.DATABASE_URL)
@@ -77,10 +78,10 @@ async function main(): Promise<void> {
     if (current !== undefined) console.log(`（原来的是 ${current.baseDomain}）`)
 
     // 新域名是启动期配置，必须重启才生效。重启之后控制面在启动时重投影路由，
-    // 新的 console.<父域> 那条才会出现。
+    // 新的控制台 Host（顶点，或显式指定的那台）才会出现。
     console.log('域名已保存。请在宿主执行以下命令使其生效：')
     console.log('  docker compose -f /opt/dsh-cloud/prod.yml restart control-plane')
-    console.log(`重启后控制台为 https://${consoleDomain}，需要重新登录。`)
+    console.log(`重启后管理入口为 https://${consoleDomain}/admin，需要重新登录。`)
   } finally {
     // 不关连接池进程退不掉
     await client.end()

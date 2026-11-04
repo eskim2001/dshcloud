@@ -13,7 +13,8 @@
 ## 拓扑
 
 ```
-浏览器 ── :443 ──> Traefik ──┬── Host(`console.lvh.me`)     → host.docker.internal:5173 (Vite 管理台)
+浏览器 ── :443 ──> Traefik ──┬── Host(`lvh.me`)              → host.docker.internal:5173 (Vite：登录 / /admin / API)
+                             ├── Host(`console.lvh.me`)     → 302 到 https://lvh.me（兼容别名）
                              └── Host(`<slug>.lvh.me`)      → forward-auth → host.docker.internal:<hostPort> (实例桥)
 ```
 
@@ -34,10 +35,9 @@ SAN 覆盖 `DNS:lvh.me,DNS:*.lvh.me` 的证书装进系统信任库；仓库默�
 - **不需要本地 DNS 容器**，也不用改 `/etc/resolver`；
 - 不会和 Clash 之类占用 :53 的程序撞车（早先用 CoreDNS 容器 + `/etc/resolver` 的方案已删掉）。
 
-控制台放在 `console.lvh.me`（`CONSOLE_DOMAIN`），实例是 `<slug>.lvh.me`（`BASE_DOMAIN=lvh.me`）。
-**控制台必须是实例拿不到的 label**：两边同属一个注册域，如果控制台占用根域
-（`lvh.me` 自己），实例命名空间就会把它包进去，租户能抢到同一个主机名。
-见 [docs/DECISIONS.md](../../docs/DECISIONS.md) 的域名拆分 ADR。
+控制台放在父域顶点 `lvh.me`（`CONSOLE_DOMAIN=BASE_DOMAIN`），管理路径是 `/admin`。
+实例是 `<slug>.lvh.me`。顶点 `Host(`lvh.me`)` 比实例子域少一个标签，租户抢不到这个主机名；
+`console.lvh.me` 只跳回顶点。详见 [docs/FORK.md](../../docs/FORK.md)。
 
 不能用 `.localhost`：Chrome 把 `Domain=.localhost` 的会话 cookie 存成 host-only
 （Cookie Store API 里 `domain: null`），不会发给 `u1t.localhost`，于是「在控制台登录 → 打开
@@ -50,7 +50,7 @@ SAN 覆盖 `DNS:lvh.me,DNS:*.lvh.me` 的证书装进系统信任库；仓库默�
 ```dotenv
 DATABASE_URL=postgres://dshcloud:dshcloud@127.0.0.1:55432/dsh_cloud
 BASE_DOMAIN=lvh.me                                 # 父域：实例是 <slug>.lvh.me
-CONSOLE_DOMAIN=console.lvh.me                      # 控制台自己的主机名
+CONSOLE_DOMAIN=lvh.me                              # 控制台主机名 = 父域；管理入口 /admin
 PUBLIC_SCHEME=https
 TRAEFIK_ENTRYPOINT=websecure
 TRAEFIK_CERT_RESOLVER=                              # 空——没有静态证书，落到 Traefik 默认证书
@@ -82,8 +82,8 @@ pnpm --dir apps/server dev:local
 pnpm dev:web
 ```
 
-浏览器访问 `https://console.lvh.me/`（**不要用 `localhost:5173`**——主机名不对，会话 cookie
-落不到实例子域上）。
+浏览器访问 `https://lvh.me/admin`（**不要用 `localhost:5173`**——主机名不对，会话在规范主机上）。
+`https://console.lvh.me/` 会跳到顶点。
 
 实例镜像不用本地构建：管理台「镜像管理」页点「同步」→ 对某个版本「下载」→「发布」→「设为默认」，
 新建实例时会自动拉取。只有改了 `docker/instance-image/` 才需要

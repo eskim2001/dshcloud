@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { CONSOLE_LABEL } from '../env.js'
 import { removeDynamicConfig, writeDynamicConfig } from './dynamic-config.js'
 
 /**
@@ -28,6 +29,11 @@ export interface PlatformRoutesOptions {
   selfPort: number
   /** 控制台主机名。**省略 = 引导态**（还没配域名），写引导口、删控制台那两条。 */
   consoleDomain?: string
+  /**
+   * 父域。与 `consoleDomain` **相同**时，控制面落在顶点（同域 `/admin`），
+   * 并多写一条 `console.<父域>` → 顶点的跳转。省略则只投影控制台主机本身。
+   */
+  baseDomain?: string
   /** 控制台 router 挂的 entryPoint（生产是 `websecure`）。 */
   entryPoint: string
   /** 承载明文的那条 entryPoint（`:80`）。跳转与引导口都用它。 */
@@ -48,31 +54,70 @@ const BOOTSTRAP_FILE = 'bootstrap.yml'
  */
 export const platformRoutesHttpEntryPoint = 'web'
 
+/** 把主机名放进正则时转义点号，免得 `console.example.com` 匹配到别的标签。 */
+function escapeHost(host: string): string {
+  return host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * 控制台自己的 router。**不挂 forward-auth** —— 它自己走会话认证（better-auth），
  * 与实例路由是两回事。
+ *
+ * 规范主机是 `Host(`控制台`)`，priority 1000。实例子域是 `Host(`<slug>.<父域>`)`：
+ * 控制台若就是父域顶点，这两条规则不可能相同（slug 总会多一个标签）。
+ * 控制台若是 `<label>.<父域>`，同长度的碰撞靠 priority + 保留字挡住。
+ *
+ * 顶点模式下另加 `Host(`console.<父域>`)` → 302 到规范主机（兼容旧书签）。
+ * 这条同样 priority 1000，且 `console` 在保留字里，实例抢不到这个别名。
  */
 export function buildConsoleConfig(opts: {
   consoleDomain: string
+  baseDomain?: string
   upstreamHost?: string
   selfPort: number
   entryPoint: string
   tls?: { certResolver?: string }
 }): unknown {
   const upstream = opts.upstreamHost ?? '127.0.0.1'
+  const tls = opts.tls === undefined ? {} : { tls: opts.tls }
+  const routers: Record<string, unknown> = {
+    'platform-web': {
+      rule: `Host(\`${opts.consoleDomain}\`)`,
+      // 显式优先级：Traefik 默认按规则长度排序，长度相同则行为未定义。实例规则的长度随
+      // slug 变化，不能靠"刚好更长"。有这条，slug 撞上控制台 label 时控制台也稳赢。
+      priority: 1000,
+      service: 'platform-web',
+      entryPoints: [opts.entryPoint],
+      ...tls,
+    },
+  }
+  const middlewares: Record<string, unknown> = {}
+
+  if (opts.baseDomain !== undefined && opts.consoleDomain === opts.baseDomain) {
+    const alias = `${CONSOLE_LABEL}.${opts.baseDomain}`
+    // 入口已经终结 TLS 时跳到 https；明文部署不能把人送去没人听的 443。
+    const scheme = opts.tls === undefined ? 'http' : 'https'
+    middlewares['console-alias-redirect'] = {
+      redirectRegex: {
+        regex: `^https?://${escapeHost(alias)}(.*)`,
+        replacement: `${scheme}://${opts.consoleDomain}\${1}`,
+        permanent: false,
+      },
+    }
+    routers['platform-console-alias'] = {
+      rule: `Host(\`${alias}\`)`,
+      priority: 1000,
+      service: 'noop@internal',
+      middlewares: ['console-alias-redirect'],
+      entryPoints: [opts.entryPoint],
+      ...tls,
+    }
+  }
+
   return {
     http: {
-      routers: {
-        'platform-web': {
-          rule: `Host(\`${opts.consoleDomain}\`)`,
-          // 显式优先级：Traefik 默认按规则长度排序，长度相同则行为未定义。实例规则的长度随
-          // slug 变化，不能靠"刚好更长"。有这条，slug 撞上控制台 label 时控制台也稳赢。
-          priority: 1000,
-          service: 'platform-web',
-          entryPoints: [opts.entryPoint],
-          ...(opts.tls === undefined ? {} : { tls: opts.tls }),
-        },
-      },
+      ...(Object.keys(middlewares).length === 0 ? {} : { middlewares }),
+      routers,
       services: {
         'platform-web': {
           loadBalancer: { servers: [{ url: `http://${upstream}:${opts.selfPort}` }] },
@@ -160,6 +205,7 @@ export async function projectPlatformRoutes(opts: PlatformRoutesOptions): Promis
     join(opts.dir, PLATFORM_FILE),
     buildConsoleConfig({
       consoleDomain,
+      ...(opts.baseDomain === undefined ? {} : { baseDomain: opts.baseDomain }),
       ...(opts.upstreamHost === undefined ? {} : { upstreamHost: opts.upstreamHost }),
       selfPort: opts.selfPort,
       entryPoint: opts.entryPoint,

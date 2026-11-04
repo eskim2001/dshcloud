@@ -44,7 +44,7 @@ export function AdminMetricStrip({
           <Icon className={cn('size-5 text-muted-foreground', alert && 'text-destructive')} />
           <div>
             <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">{label}</p>
-            <p className="mt-1 text-3xl font-light tabular-nums tracking-tight text-foreground">{value}</p>
+            <p className="mt-1 text-2xl font-medium tabular-nums tracking-tight text-foreground">{value}</p>
             {detail !== undefined && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
           </div>
         </div>
@@ -67,7 +67,7 @@ export function AdminTableSection({
           {toolbar}
         </div>
       )}
-      <div className="min-w-0 p-6 relative z-10">{children}</div>
+      <div className="min-w-0 px-4 py-3 md:px-5 relative z-10">{children}</div>
     </section>
   )
 }

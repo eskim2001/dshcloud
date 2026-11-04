@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CopyableText } from '@/components/copyable-text.js'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible.js'
 import { Badge } from '@/components/ui/badge.js'
 import { Button } from '@/components/ui/button.js'
 import { Input } from '@/components/ui/input.js'
@@ -46,15 +47,22 @@ export function InvitePanel() {
   const failed = create.isError || revoke.isError
 
   return (
-    <section className="flex flex-col mt-8 rounded-xl border border-border/80 bg-card shadow-sm overflow-hidden">
-      <div className="border-b border-border/60 bg-muted/30 px-6 py-5">
-        <h2 className="text-sm font-medium tracking-tight text-foreground">{t('admin.users.inviteTitle')}</h2>
-        <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
-          {t('admin.users.inviteDescription', { hours: invites.data?.ttlHours ?? 0 })}
-        </p>
-      </div>
-
-      <div className="p-6 relative z-10 flex flex-col gap-6">
+    <Collapsible className="mt-2 rounded-xl border border-border/70 bg-card">
+      <CollapsibleTrigger className="flex w-full items-start justify-between gap-4 px-5 py-4 text-left">
+        <span>
+          <span className="block text-sm font-medium tracking-tight text-foreground">
+            {t('admin.users.inviteFold')}
+          </span>
+          <span className="mt-1 block text-[13px] leading-5 text-muted-foreground">
+            {t('admin.users.inviteFoldHint')}
+          </span>
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-t border-border/60 px-5 py-5">
+      <p className="mb-4 text-[13px] leading-5 text-muted-foreground">
+        {t('admin.users.inviteDescription', { hours: invites.data?.ttlHours ?? 0 })}
+      </p>
+      <div className="relative z-10 flex flex-col gap-6">
         <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
           <Input
             type="email"
@@ -136,6 +144,7 @@ export function InvitePanel() {
         </ul>
       )}
       </div>
-    </section>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }

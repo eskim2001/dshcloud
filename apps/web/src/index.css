@@ -94,9 +94,9 @@ body,
 .dark {
   /* 黑曜石家族：中性色**零彩度**，和登录页的 #050505 / #1a1a1a / #888 是同一套材料。
      原来这套锌灰带蓝调（色相 285），跟登录页的中性黑摆在一起就是两种灰。 */
-  --background: oklch(0.155 0 0);
+  --background: oklch(0.128 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.19 0 0);
+  --card: oklch(0.168 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.19 0 0);
   --popover-foreground: oklch(0.985 0 0);
@@ -118,7 +118,7 @@ body,
   --chart-4: oklch(0.45 0 0);
   --chart-5: oklch(0.32 0 0);
   /* 侧栏是这块屏幕上最深的一层 —— 它是沙箱的壳，工作区在它里面。 */
-  --sidebar: oklch(0.115 0 0);
+  --sidebar: oklch(0.09 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.536 0.095 181.5);
   --sidebar-primary-foreground: oklch(0.985 0 0);

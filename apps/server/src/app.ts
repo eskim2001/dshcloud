@@ -41,7 +41,8 @@ import {
   inviteUrl,
   newInviteToken,
 } from './invitation.js'
-import { demoAccount, trustedOrigins, type Env } from './env.js'
+import { createUserWithPassword } from './account.js'
+import { demoAccount, isPlatformHost, trustedOrigins, type Env } from './env.js'
 import { registerAdminRoutes } from './http/admin-routes.js'
 import { expireLegacyCookies } from './http/legacy-cookies.js'
 import { registerForwardAuth } from './http/forward-auth-route.js'
@@ -140,7 +141,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     reply.header('referrer-policy', 'no-referrer')
     reply.header('x-content-type-options', 'nosniff')
     if (request.url.startsWith('/api/')) reply.header('cache-control', 'no-store')
-    if (deps.bootstrap || request.headers.host !== deps.env.CONSOLE_DOMAIN) return payload
+    // 规范主机是 CONSOLE_DOMAIN（可以就是父域）。别名 console.<父域> 在入口被跳走，
+    // 万一请求还是打到了进程上，同样清掉旧的父域 cookie。
+    if (deps.bootstrap || !isPlatformHost(deps.env, request.headers.host)) return payload
     const expired = expireLegacyCookies(request.headers.cookie, deps.env.BASE_DOMAIN, deps.env.PUBLIC_SCHEME === 'https')
     if (expired.length) {
       // Fastify appends Set-Cookie values, preserving the authentication response.
@@ -380,6 +383,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     },
     streamLogs,
     getSessionUser: (req) => sessionUser(req.headers),
+    createUser: (input) => createUserWithPassword(deps.auth, input),
 
     // 邀请：明文 token 只在这个函数里存在过一次——库里存的是哈希，返回给 owner
     // 之后再也要不回来（见 db/invitation-repo.ts）。

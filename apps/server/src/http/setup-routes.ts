@@ -3,7 +3,6 @@ import { resolve4 } from 'node:dns/promises'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { AccountExistsError } from '../account.js'
-import { CONSOLE_LABEL } from '../env.js'
 import { DomainSchema } from '../domain.js'
 
 /**
@@ -39,13 +38,11 @@ export interface SetupDeps {
   demo?: { email: string; password: string } | null
 }
 
-/** 父域形状：小写 hostname，且**至少两个标签**（否则 `console.<父域>` 不成立）。 */
+/** 父域形状：小写 hostname，且**至少两个标签**。控制台可以就是这个顶点。 */
 const BaseDomainSchema = DomainSchema
 const SetupDomainsSchema = z.object({
   baseDomain: BaseDomainSchema,
   consoleDomain: BaseDomainSchema.optional(),
-}).refine(value => value.consoleDomain !== value.baseDomain, {
-  path: ['consoleDomain'], message: '控制台不能使用工作空间父域本身',
 })
 
 /**
@@ -57,8 +54,6 @@ const SetupBodySchema = z.object({
   consoleDomain: BaseDomainSchema.optional(),
   email: z.string().trim().email().max(254),
   password: z.string().min(8).max(200),
-}).refine(value => value.consoleDomain !== value.baseDomain, {
-  path: ['consoleDomain'], message: '控制台不能使用工作空间父域本身',
 })
 
 /** 常量时间比较（等长时）。`expected` 为空一律不匹配 —— 别让「没配 token」变成「谁都能配」。 */
@@ -116,7 +111,8 @@ export function registerSetupRoutes(app: FastifyInstance, deps: SetupDeps): void
 
     const resolve = deps.resolveSubdomain ?? defaultResolve
     const probe = `dsh-check-${randomBytes(4).toString('hex')}.${parsed.data.baseDomain}`
-    const consoleDomain = parsed.data.consoleDomain ?? `${CONSOLE_LABEL}.${parsed.data.baseDomain}`
+    // 没填控制台主机名 = 同域：控制台就是父域，管理入口在 `/admin`。
+    const consoleDomain = parsed.data.consoleDomain ?? parsed.data.baseDomain
     const [addresses, consoleAddresses] = await Promise.all([resolve(probe), resolve(consoleDomain)])
     return {
       resolved: addresses.length > 0 && consoleAddresses.length > 0,
@@ -152,7 +148,7 @@ export function registerSetupRoutes(app: FastifyInstance, deps: SetupDeps): void
     }
 
     const { baseDomain, email, password } = parsed.data
-    const consoleDomain = parsed.data.consoleDomain ?? `${CONSOLE_LABEL}.${baseDomain}`
+    const consoleDomain = parsed.data.consoleDomain ?? baseDomain
 
     // **先建号再落域名**：建号失败（邮箱已被占）时域名还没写进库，向导还能重来一次。
     // 反过来就会留下"域名配好了、但没有任何账号"的死局 —— 那个状态连界面都进不去。

@@ -101,7 +101,8 @@ function generateEnvFile() {
     '# 域名走 *.lvh.me：公共通配 DNS 解析到 127.0.0.1，不需要本地 DNS。',
     'DATABASE_URL=postgres://dshcloud:dshcloud@127.0.0.1:55432/dsh_cloud',
     'BASE_DOMAIN=lvh.me',
-    'CONSOLE_DOMAIN=console.lvh.me',
+    '# 控制台就是父域顶点。管理入口 https://lvh.me/admin ；console.lvh.me 只跳转过来。',
+    'CONSOLE_DOMAIN=lvh.me',
     'PUBLIC_SCHEME=https',
     'TRAEFIK_ENTRYPOINT=websecure',
     '# 留空 = 不挂 ACME resolver，落到 Traefik 内置的默认自签证书（浏览器红锁，点继续）',
@@ -154,8 +155,8 @@ function validateEnvFile(map) {
   }
   const base = map.get('BASE_DOMAIN')
   const console_ = map.get('CONSOLE_DOMAIN')
-  if (base && console_ && !console_.endsWith(`.${base}`)) {
-    problems.push(`CONSOLE_DOMAIN（${console_}）必须是 BASE_DOMAIN（${base}）的子域`)
+  if (base && console_ && console_ !== base && !console_.endsWith(`.${base}`)) {
+    problems.push(`CONSOLE_DOMAIN（${console_}）必须等于 BASE_DOMAIN（${base}），或是它的子域`)
   }
   return problems
 }
@@ -185,10 +186,10 @@ function readDevCredentials() {
     return {
       email: map.get('SEED_ADMIN_EMAIL') || DEV_ADMIN_EMAIL,
       password: map.get('SEED_ADMIN_PASSWORD') || DEV_ADMIN_PASSWORD,
-      consoleDomain: map.get('CONSOLE_DOMAIN') || 'console.lvh.me',
+      consoleDomain: map.get('CONSOLE_DOMAIN') || 'lvh.me',
     }
   } catch {
-    return { email: DEV_ADMIN_EMAIL, password: DEV_ADMIN_PASSWORD, consoleDomain: 'console.lvh.me' }
+    return { email: DEV_ADMIN_EMAIL, password: DEV_ADMIN_PASSWORD, consoleDomain: 'lvh.me' }
   }
 }
 
@@ -371,7 +372,7 @@ if (!(await waitForConsole())) {
 } else {
   const { email, password, consoleDomain } = readDevCredentials()
   console.log(`\n${'─'.repeat(60)}`)
-  console.log(`  管理台：https://${consoleDomain}`)
+  console.log(`  管理台：https://${consoleDomain}/admin`)
   console.log('  证书是 Traefik 的默认自签证书 → 浏览器会红锁，点「继续访问」。')
   if (seedResult === 'created') {
     console.log(`  登录：${email} / ${password}`)

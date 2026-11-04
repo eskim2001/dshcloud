@@ -54,9 +54,9 @@ export default function HomePage() {
         )}
 
         {instances.data !== undefined && current === undefined && (
-          <Card className="flex flex-col items-center justify-center p-12 text-center border-dashed">
-            <div className="size-12 rounded-full bg-muted/50 flex items-center justify-center mb-4 text-muted-foreground">
-              <PlusIcon className="size-5" />
+          <Card className="flex flex-col items-center justify-center border-dashed p-12 text-center">
+            <div className="mb-4 flex size-11 items-center justify-center border border-border/80 text-muted-foreground">
+              <PlusIcon className="size-4" />
             </div>
             <p className="text-[14px] font-medium text-foreground">{t('home.emptyTitle')}</p>
             <p className="mt-1 text-[13px] text-muted-foreground mb-6 max-w-md">{t('home.emptyBody')}</p>
@@ -82,7 +82,7 @@ export default function HomePage() {
               </div>
             )}
 
-            <Card className="group relative overflow-hidden flex flex-col sm:flex-row sm:items-center justify-between p-6 gap-6 transition-colors hover:bg-muted/30">
+            <Card className="group relative flex flex-col gap-6 overflow-hidden border-l-2 border-l-primary p-6 sm:flex-row sm:items-center sm:justify-between">
               <Link to={`/workspaces/${current.id}/open`} className="absolute inset-0 z-0 outline-none">
                 <span className="sr-only">{t('instances.open')}</span>
               </Link>

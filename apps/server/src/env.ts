@@ -23,9 +23,13 @@ const EnvSchema = z.object({
   BASE_DOMAIN: z.union([z.literal(''), DomainSchema]).default(''),
 
   /**
-   * 控制台自己的主机名，可在独立域名上；默认使用 `console.<BASE_DOMAIN>`。
-   * 父域本身不当主机名用——`<父域>` 这一层留给实例命名空间（`<slug>.<父域>`）。
-   * 它决定 better-auth 的 baseURL、受信 Origin 和未登录时的跳转目标。与 `BASE_DOMAIN` 同为空。
+   * 控制台自己的主机名。它决定 better-auth 的 baseURL、受信 Origin 和未登录时的跳转目标。
+   * 与 `BASE_DOMAIN` 同为空。
+   *
+   * **可以等于父域**（同域入口，如 `dsh.example.com/admin`）。实例子域永远是
+   * `<slug>.<父域>`，对不上顶点 `Host(`父域`)`，所以父域当控制台主机名抢不走。
+   * 也可以仍是父域下的独立主机（`console.<父域>`）；那种部署里 `console.` 不是唯一入口的前提
+   * 不成立，见 `platform-routes.ts` 的别名跳转——只有顶点模式才会把 `console.<父域>` 指回顶点。
    */
   CONSOLE_DOMAIN: z.union([z.literal(''), DomainSchema]).default(''),
 
@@ -183,13 +187,7 @@ const EnvSchema = z.object({
     }
     return
   }
-  if (env.CONSOLE_DOMAIN === env.BASE_DOMAIN) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['CONSOLE_DOMAIN'],
-      message: 'CONSOLE_DOMAIN 不能与 BASE_DOMAIN 相同，工作空间父域不作为控制台主机名',
-    })
-  }
+  // 相等是同域入口（父域顶点 = 控制台），不是配置错误。实例子域多一个标签，对不上这个 Host。
 })
 
 export type Env = z.infer<typeof EnvSchema>
@@ -215,7 +213,7 @@ export function trustedOrigins(env: Env): string[] {
 }
 
 /**
- * 控制台主机名的**首段**（`console`），引导态里由操作者填的父域推出控制台地址时要用。
+ * `console.<父域>` 兼容别名的标签。同域模式下入口把这个主机 302 到父域顶点。
  *
  * 这个字面量在**三处**出现，改一处就得改另两处：这里、`RESERVED_SLUGS`（租户不能抢它，
  * 见 `packages/instance-spec`）、安装脚本的 `CONSOLE_LABEL`。前两者的关系有测试盯着
@@ -223,9 +221,52 @@ export function trustedOrigins(env: Env): string[] {
  */
 export const CONSOLE_LABEL = 'console'
 
-/** 控制台主机名的首段（`console.lvh.me` → `console`；引导态是空串）。实例不能占用它。 */
+/**
+ * 请求头 `Host` 的主机名，去掉端口。
+ *
+ * `lvh.me:443` 与 `lvh.me` 是同一台控制台。IPv6 的方括号主机原样留下（平台不用它当控制台）。
+ */
+export function hostnameOf(hostHeader: string | undefined): string {
+  if (hostHeader === undefined || hostHeader === '') return ''
+  if (hostHeader.startsWith('[')) {
+    const end = hostHeader.indexOf(']')
+    return end === -1 ? hostHeader : hostHeader.slice(0, end + 1)
+  }
+  return hostHeader.replace(/:\d+$/u, '')
+}
+
+/**
+ * 这个 Host 是不是控制面自己（含同域模式下的 `console.<父域>` 跳转别名）。
+ *
+ * 别名只为了清旧 cookie / 识别「这是平台流量」。写请求的 Origin 仍然只信
+ * `trustedOrigins` 里的**规范主机**——别名在入口被 302 走，不在上面建会话。
+ */
+export function isPlatformHost(env: Env, hostHeader: string | undefined): boolean {
+  const host = hostnameOf(hostHeader)
+  if (host === '' || env.CONSOLE_DOMAIN === '') return false
+  if (host === env.CONSOLE_DOMAIN) return true
+  return (
+    env.BASE_DOMAIN !== '' &&
+    env.CONSOLE_DOMAIN === env.BASE_DOMAIN &&
+    host === `${CONSOLE_LABEL}.${env.BASE_DOMAIN}`
+  )
+}
+
+/**
+ * 能被实例 slug 抢到的那一截标签。
+ *
+ * 只有控制台主机**恰好**是 `<label>.<父域>` 时，slug = label 才会渲染出同一条
+ * `Host` 规则。父域顶点（`CONSOLE_DOMAIN === BASE_DOMAIN`）不是这种形状，返回空串——
+ * 没有可抢的标签。引导态也是空串。
+ */
 export function consoleLabel(env: Env): string {
-  return env.CONSOLE_DOMAIN.split('.')[0]!
+  const { CONSOLE_DOMAIN: consoleDomain, BASE_DOMAIN: base } = env
+  if (consoleDomain === '' || base === '' || consoleDomain === base) return ''
+  const suffix = `.${base}`
+  if (!consoleDomain.endsWith(suffix)) return ''
+  const label = consoleDomain.slice(0, -suffix.length)
+  if (label === '' || label.includes('.')) return ''
+  return label
 }
 
 /**

@@ -24,7 +24,7 @@ const OUT_DIR = process.env.SHOTS_DIR
   : path.join(ROOT, 'docs/screenshots')
 
 const CDP = 'http://127.0.0.1:9222'
-const ORIGIN = 'https://console.lvh.me'
+const ORIGIN = 'https://lvh.me'
 const EMAIL = 'admin@lvh.me'
 const PASSWORD = 'dsh-cloud-dev'
 

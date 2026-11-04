@@ -394,6 +394,22 @@ export async function listAdminUsers(): Promise<{
   return request('/api/admin/users')
 }
 
+/**
+ * 管理员直接设账密建号。`account` 是邮箱，或用户名（服务端收成 `<用户名>@父域`）。
+ * 返回的 `email` 就是之后登录框里要填的地址。
+ */
+export async function createAdminUser(input: {
+  account: string
+  password: string
+  name?: string
+  role?: 'user' | 'admin'
+}): Promise<{ user: { id: string; email: string } }> {
+  return request('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export interface AdminInstancesResult {
   instances: AdminInstance[]
   /** DB status==='running' 的活实例数（与 max-running 闸门同一口径）。 */
@@ -614,7 +630,7 @@ export async function probeSetupDomain(
 /**
  * 提交**首个管理员账号**和父域。凭证是安装脚本打印的**一次性 token**（在 URL 里带过来的）。
  *
- * 服务端会建号 → 算 `console.<父域>` → 落库 → **立刻摘掉引导口**，然后重启自己。
+ * 服务端会建号 → 控制台主机名（默认同父域）落库 → **立刻摘掉引导口**，然后重启自己。
  * 建号在落域名**之前**：邮箱被占时回 409 `account-exists`，此时什么都没改，换个邮箱重来即可。
  *
  * `dns` 是一次粗检的结果（随机子域解不解得出来）—— **只作提示，不拦**：解析可能是反代、

@@ -205,9 +205,11 @@ export async function registerInstanceRoutes(
         })
       }
 
-      // 兜一层：控制台域名可以配成任何词，静态保留字表未必覆盖它的首段。
-      // 抢到这个 label 就等于把控制台的 router 规则撞成同长度（见 DECISIONS 的域名拆分 ADR）。
-      if (parsed.data.slug === consoleLabel(deps.env)) {
+      // 兜一层：控制台若是 `<label>.<父域>`，静态保留字表未必覆盖这个 label。
+      // 抢到它就等于把控制台的 router 规则撞成同长度。父域顶点没有这种 label
+      // （`consoleLabel` 返回空），实例子域多一个标签，对不上 `Host(`父域`)`。
+      const stolen = consoleLabel(deps.env)
+      if (stolen !== '' && parsed.data.slug === stolen) {
         return reply.code(400).send({
           error: `slug 不能是控制台域名 ${deps.env.CONSOLE_DOMAIN} 的首段`,
         })

@@ -132,15 +132,32 @@
 
 .login-form-wrap {
   width: 100%;
-  max-width: 320px;
+  max-width: 22.5rem;
+}
+
+.login-kicker {
+  margin: 0 0 0.65rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #087f71;
 }
 
 .login-title {
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin-bottom: 1.75rem;
+  font-size: 1.75rem;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  margin: 0;
   color: var(--foreground);
+}
+
+.login-entry {
+  margin: 0.55rem 0 1.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
 }
 
 .login-form {
