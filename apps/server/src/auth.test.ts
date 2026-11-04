@@ -42,6 +42,38 @@ describe('引导态下的认证', () => {
     ).toBe('https://console.app.example.com')
   })
 
+  it('登录路径走 60s 内存限速，超额直接 429', async () => {
+    const { db, client } = createDb('postgres://localhost:5432/nonexistent')
+    try {
+      const auth = createAuth(
+        env({ BASE_DOMAIN: 'app.example.com', CONSOLE_DOMAIN: 'console.app.example.com' }),
+        db,
+      )
+      const context = await auth.$context
+      expect(context.rateLimit).toMatchObject({
+        enabled: true,
+        window: 60,
+        max: 100,
+        storage: 'memory',
+      })
+      expect(context.rateLimit.customRules?.['/sign-in/*']).toEqual({ window: 60, max: 10 })
+
+      // 打到登录前缀但不是真登录：限速在进路由之前计数，不必连数据库。
+      const signIn = () =>
+        auth.handler(
+          new Request('https://console.app.example.com/api/auth/sign-in/rate-limit-probe', {
+            method: 'POST',
+            headers: { origin: 'https://console.app.example.com' },
+          }),
+        )
+
+      for (let i = 0; i < 10; i++) {
+        expect((await signIn()).status).not.toBe(429)
+      }
+      expect((await signIn()).status).toBe(429)
+    } finally { await client.end() }
+  })
+
   it('**建上下文不抛** —— 真机上 seed 就死在这一步', async () => {
     // 连接是懒的，这里不会真的碰数据库；要的只是走完 better-auth 的上下文初始化
     const { db } = createDb('postgres://localhost:5432/nonexistent')

@@ -37,6 +37,19 @@ export function createAuth(env: Env, db: Db, _opts: { bootstrap?: boolean } = {}
     // 账号只有两条路产生——seed 的第一个 owner，和 owner 发的邀请链接；
     // 两条都走 createUserWithPassword（src/account.ts），绕过这个开关。
     emailAndPassword: { enabled: true, disableSignUp: true },
+    // 进程内内存桶即可：单机控制面，不做跨进程计数，也不为限速加表。
+    // 总窗口 60s；登录 / 注册比其余 auth 路径更紧，挡住对口令的在线穷举。
+    // 库默认只在 production 打开，这里显式打开，避免开发和生产各是一套。
+    rateLimit: {
+      enabled: true,
+      window: 60,
+      max: 100,
+      storage: 'memory',
+      customRules: {
+        '/sign-in/*': { window: 60, max: 10 },
+        '/sign-up/*': { window: 60, max: 5 },
+      },
+    },
     plugins: [
       // 平台管理员（运营方）。它带来 role / banned 字段，并让 better-auth
       // 在建会话时**拒绝**被封禁的用户——封禁因此是真的封禁，不只是标记。
