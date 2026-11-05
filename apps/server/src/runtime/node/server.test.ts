@@ -62,6 +62,33 @@ describe('node service policy', () => {
     expect(() => parseNodeRequest(raw, repo)).toThrow()
   })
 
+  it('拒绝把模型凭据写进快照卷，失败响应也不回显正文', async () => {
+    const fixture = 'fixture-model-key-alpha-9f3c'
+    expect(() => parseNodeRequest({
+      method: 'seedCredentialsFileIfAbsent',
+      args: [`${key}.prev`, 'version: 1\n'],
+    }, repo)).toThrow()
+    expect(() => parseNodeRequest({
+      method: 'seedCredentialsFileIfAbsent',
+      args: [key, 'x'.repeat(8193)],
+    }, repo)).toThrow()
+    const app = createNodeService({
+      seedCredentialsFileIfAbsent: async () => {
+        throw new Error(`leaked ${fixture}`)
+      },
+    } as unknown as RuntimeDriver, repo)
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/runtime',
+        payload: { method: 'seedCredentialsFileIfAbsent', args: [key, `version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${fixture}\n`] },
+      })
+      expect(response.statusCode).toBe(500)
+      expect(response.body).not.toContain(fixture)
+      expect(response.json()).toEqual({ error: 'node-operation-failed' })
+    } finally { await app.close() }
+  })
+
   it('rejects a context image substitution', () => {
     const raw = createRequest()
     Object.assign(raw.args[1]!, { baseImage: 'evil.example/image:latest' })

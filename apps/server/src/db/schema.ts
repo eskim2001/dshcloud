@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, pgTable, primaryKey, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 
 // ─── better-auth 管理的表 ────────────────────────────────────────────────
 // 字段名与 better-auth 1.7 的默认 drizzle schema 一致；改这里等于改认证。
@@ -285,6 +285,35 @@ export const invitation = pgTable(
   ],
 )
 
+/**
+ * 管理员为某个用户配置的默认模型凭据。库里只有密文。
+ *
+ * 这不是 gate token，也不是 dsh 启动时打印的入口 token，更不是会话 cookie。
+ * 那些材料继续走原来的派生 / stdout / session，不进这张表。
+ * `user_id` 级联删除：人没了，默认密文一起没。
+ * `updated_by_admin_id` 只是审计戳，管理员账号被删时置空，不能把被配置用户的默认一起删掉。
+ */
+export const userModelCredential = pgTable(
+  'user_model_credential',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    /** CredentialRef，例如 `DEEPSEEK_API_KEY`。与容器 env 不是同一条通道。 */
+    providerRef: text('provider_ref').notNull(),
+    /** `v1.` + base64(iv ‖ tag ‖ ciphertext)。算法见 model-credentials/crypto.ts。 */
+    ciphertext: text('ciphertext').notNull(),
+    /** 与密文前缀一致。v1 = PLATFORM_SECRET 经 HKDF 得到的 AES-256-GCM 密钥。 */
+    keyVersion: integer('key_version').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedByAdminId: text('updated_by_admin_id').references(() => user.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.providerRef] }),
+    index('user_model_credential_user_id_idx').on(t.userId),
+  ],
+)
+
 export type InstanceRow = typeof instance.$inferSelect
 export type InstanceStatus = InstanceRow['status']
 export type InstanceMetricRow = typeof instanceMetric.$inferSelect
@@ -292,6 +321,7 @@ export type ImageReleaseRow = typeof imageRelease.$inferSelect
 export type ImageCatalogRow = typeof imageCatalog.$inferSelect
 export type PlatformSettingRow = typeof platformSetting.$inferSelect
 export type InvitationRow = typeof invitation.$inferSelect
+export type UserModelCredentialRow = typeof userModelCredential.$inferSelect
 
 // Workspace credentials never contain the console session token.
 export const workspaceGrant = pgTable('workspace_grant', {

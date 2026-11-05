@@ -107,9 +107,10 @@ describe('注册面：GET 必须逐一交代清楚', () => {
     expect(actual).toEqual([...ALLOWED_GET_ROUTES].sort())
   })
 
-  it('写操作只用 POST / PATCH / DELETE（没有把副作用藏在别的动词里）', async () => {
+  it('写操作只用 POST / PATCH / PUT / DELETE（没有把副作用藏在别的动词里）', async () => {
     const methods = new Set((await collect()).map((r) => r.method))
-    expect([...methods].sort()).toEqual(['DELETE', 'GET', 'PATCH', 'POST'])
+    // PUT 只给管理员改用户级模型凭据：幂等替换一份 map，仍然挂在 admin 钩子上。
+    expect([...methods].sort()).toEqual(['DELETE', 'GET', 'PATCH', 'POST', 'PUT'])
   })
 })
 

@@ -91,5 +91,12 @@ export class NodeRuntimeDriver implements RuntimeDriver {
     return entries === undefined ? undefined : new Map(entries)
   }
   copyStorage(from: string, to: string): Promise<void> { return this.call({ method: 'copyStorage', args: [from, to] }) }
+  seedCredentialsFileIfAbsent(key: string, contents: Buffer): Promise<boolean> {
+    const yaml = contents.toString('utf8')
+    if (yaml.length === 0 || yaml.length > 8192 || contents.length !== Buffer.byteLength(yaml)) {
+      return Promise.reject(new Error('Invalid credentials payload'))
+    }
+    return this.call({ method: 'seedCredentialsFileIfAbsent', args: [key, yaml] })
+  }
   heal(): Promise<void> { return this.call({ method: 'heal', args: [] }) }
 }

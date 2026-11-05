@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { promisify } from 'node:util'
 import net from 'node:net'
 import type Docker from 'dockerode'
 import type { InstanceSpec, RenderContext, RenderedInstance } from '@dsh-cloud/instance-spec'
-import { MACHINE_PREFIX, InstanceSlugSchema, networkName, renderInstance } from '@dsh-cloud/instance-spec'
+import { MACHINE_PREFIX, InstanceSlugSchema, INSTANCE_GID, INSTANCE_UID, networkName, renderInstance } from '@dsh-cloud/instance-spec'
 import { createDocker, demuxFrames, isNotFound, isNotModified } from '../../docker/client.js'
 import { LXCFS_FILES } from './lxcfs.js'
 import { readBoundedLogs } from './log-reader.js'
@@ -22,6 +22,7 @@ import {
   updateProjectQuota,
   type StoragePool,
 } from '../../instance/pool.js'
+import { singleFileTar } from './single-file-tar.js'
 import {
   StorageExistsError,
   StorageNotFoundError,
@@ -306,6 +307,39 @@ export class DockerDriver implements RuntimeDriver {
     if (st.uid === uid && st.gid === gid) return
 
     await execFileAsync('sh', ['-c', CHOWN_SCRIPT, 'dsh-chown', dir, String(uid), String(gid)])
+  }
+
+  /**
+   * 只写 `.credentials.yaml`，而且只在它还不存在的时候写。
+   *
+   * 池化目录控制面自己写；命名卷在 Docker 虚拟机里，走一次性辅助容器解一个 tar。
+   * 两条路都不把文件内容放进 argv / env，写完也不再打开。属主留给后面的 chown。
+   */
+  async seedCredentialsFileIfAbsent(key: string, contents: Buffer): Promise<boolean> {
+    if (contents.length === 0 || contents.length > MAX_CREDENTIALS_BYTES) {
+      throw new Error('模型凭据文档大小不合法')
+    }
+    if (!LIVE_STORAGE_KEY.test(key)) throw new Error('只能往实例数据卷写入模型凭据')
+    await this.assertStorageStopped(key)
+    if (!this.enforced) return this.seedNamedVolumeCredentials(key, contents)
+
+    assertStorageKey(key)
+    await this.ensureStorage(key)
+    const path = join(this.dirOf(key), CREDENTIALS_FILE)
+    try {
+      await lstat(path)
+      return false
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    try {
+      await writeFile(path, contents, { flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+      throw error
+    }
+    await chmod(path, 0o600)
+    return true
   }
 
   /** 删掉这一份数据。幂等。**只删这一个 key** —— 快照由 `DataStore` 按 `.prev` 命名去删。 */
@@ -750,6 +784,62 @@ export class DockerDriver implements RuntimeDriver {
     // 无残留可收：见上面的注释。
   }
 
+  /**
+   * 命名卷上看不见宿主路径。先问文件在不在（退出码，不把内容打出来），
+   * 不在才把 tar 解进去。已经存在就原样留下，连 chmod 都不做。
+   */
+  private async seedNamedVolumeCredentials(key: string, contents: Buffer): Promise<boolean> {
+    if (!(await this.volumeExists(key))) {
+      throw new StorageNotFoundError(`数据卷 ${key} 不存在`)
+    }
+    await this.ensureImage(this.helperImage)
+    const name = `dsh-helper-${randomUUID().slice(0, 8)}`
+    const container = await this.docker.createContainer({
+      name,
+      Image: this.helperImage,
+      Cmd: ['sleep', '30'],
+      HostConfig: {
+        Binds: [`${key}:${HELPER_MOUNT}`],
+        NetworkMode: 'none',
+      },
+    })
+    try {
+      await container.start()
+      const target = `${HELPER_MOUNT}/${CREDENTIALS_FILE}`
+      const exists = await this.helperExecCode(container, [
+        'sh', '-c', 'if [ -e "$1" ] || [ -L "$1" ]; then exit 3; fi; exit 0', 'sh', target,
+      ])
+      if (exists === 3) return false
+      if (exists !== 0) throw new Error('写入模型凭据失败')
+      const archive = singleFileTar(CREDENTIALS_FILE, contents, 0o600, INSTANCE_UID, INSTANCE_GID)
+      try {
+        await container.putArchive(archive, { path: HELPER_MOUNT })
+      } catch {
+        throw new Error('写入模型凭据失败')
+      }
+      const mode = await this.helperExecCode(container, ['chmod', '0600', target])
+      if (mode !== 0) throw new Error('写入模型凭据失败')
+      return true
+    } finally {
+      await container.remove({ force: true }).catch(() => undefined)
+    }
+  }
+
+  /** 跑一条不回显 stdout 的命令。凭据文件的内容不能出现在控制面日志里。 */
+  private async helperExecCode(container: Docker.Container, cmd: string[]): Promise<number> {
+    const exec = await container.exec({ Cmd: cmd, AttachStdout: true, AttachStderr: true })
+    const stream = (await exec.start({})) as NodeJS.ReadableStream
+    try {
+      for await (const _chunk of stream) {
+        // 丢掉。存在性检查和 chmod 都不该把文件内容留在内存之外的日志里。
+      }
+    } catch {
+      throw new Error('写入模型凭据失败')
+    }
+    const info = await exec.inspect()
+    return info.ExitCode ?? 1
+  }
+
   // ---------------- 辅助容器（**只在命名卷退路上用**）----------------
 
   /**
@@ -789,6 +879,10 @@ export class DockerDriver implements RuntimeDriver {
 /** 辅助容器里挂卷的路径。 */
 const HELPER_MOUNT = '/_src'
 const HELPER_TARGET = '/_dst'
+/** 与 dsh `DSH_HOME` 下的凭据文件同名。只写这一份，不接受调用方指定路径。 */
+const CREDENTIALS_FILE = '.credentials.yaml'
+const MAX_CREDENTIALS_BYTES = 8192
+const LIVE_STORAGE_KEY = /^[a-f0-9]{32}$/
 
 /**
  * 递归改属主的脚本。**两条路径共用一份**（挂载点不同，行为要一模一样）。

@@ -44,6 +44,7 @@ import {
   newInviteToken,
 } from './invitation.js'
 import { createUserWithPassword } from './account.js'
+import { applyUserModelCredentials, clearUserModelCredentials } from './model-credentials/repo.js'
 import { demoAccount, isPlatformHost, trustedOrigins, type Env } from './env.js'
 import { EMPTY_USER_RESOURCE_QUOTAS } from './platform-caps.js'
 import { registerAdminRoutes } from './http/admin-routes.js'
@@ -354,6 +355,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     },
     // 降级最后一名管理员 = 所有人都进不了管理台，只能靠 db:seed 恢复。
     // 查两次再写，两个管理员同时自降的窗口极窄，单运营者场景不值得上事务。
+    putModelCredentials: (userId, adminId, refs) =>
+      applyUserModelCredentials(deps.db, deps.env.PLATFORM_SECRET, userId, adminId, refs),
+    clearModelCredentials: (userId) => clearUserModelCredentials(deps.db, userId),
     setRole: async (userId, role) => {
       const target = await findUserById(deps.db, userId)
       if (target === undefined) return 'missing'

@@ -7,6 +7,7 @@ import { BanButton } from '@/components/admin/ban-button.js'
 import { CreateUserPanel } from '@/components/admin/create-user-panel.js'
 import { InvitePanel } from '@/components/admin/invite-panel.js'
 import { RoleButton } from '@/components/admin/role-button.js'
+import { UserModelKeyEditor } from '@/components/admin/user-model-key-editor.js'
 import { UserQuotaEditor } from '@/components/admin/user-quota-editor.js'
 import { UserResourceCapsEditor } from '@/components/admin/user-resource-caps-editor.js'
 import { Badge } from '@/components/ui/badge.js'
@@ -101,6 +102,7 @@ export default function AdminUsersPage() {
                   <TableHead>{t('admin.users.instances')}</TableHead>
                   <TableHead className="hidden sm:table-cell">{t('admin.users.quota')}</TableHead>
                   <TableHead>{t('admin.users.status')}</TableHead>
+                  <TableHead className="text-right">{t('admin.users.modelKey')}</TableHead>
                   <TableHead className="text-right">{t('admin.users.actions')}</TableHead>
                 </TableRow>
               </TableHeader>
@@ -144,6 +146,12 @@ export default function AdminUsersPage() {
                           {t('admin.users.active')}
                         </span>
                       )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <UserModelKeyEditor
+                        userId={user.id}
+                        configured={user.modelCredentials.configured}
+                      />
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">

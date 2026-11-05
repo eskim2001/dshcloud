@@ -1,7 +1,8 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import type { UserResourceQuotas } from '../platform-caps.js'
+import { projectModelCredentials, type ModelCredentialPublic } from '../model-credentials/view.js'
 import type { Db } from './client.js'
-import { instance, session, user } from './schema.js'
+import { instance, session, user, userModelCredential } from './schema.js'
 
 /**
  * 平台管理面（管理员）用到的查询。**不属于任何实例**——这些是跨实例的
@@ -27,6 +28,10 @@ export interface AdminUserRow {
   diskMbQuota: number | null
   instanceCount: number
   createdAt: Date
+  /** 有没有任何用户级默认。列表用，不含明文。 */
+  modelCredentialsConfigured: boolean
+  /** configured / providerRefs / updatedAt。永不带 ciphertext。 */
+  modelCredentials: ModelCredentialPublic
 }
 
 export async function listUsersWithInstanceCount(db: Db): Promise<AdminUserRow[]> {
@@ -50,7 +55,30 @@ export async function listUsersWithInstanceCount(db: Db): Promise<AdminUserRow[]
     .leftJoin(instance, and(eq(instance.ownerId, user.id), isNull(instance.deletedAt)))
     .groupBy(user.id)
     .orderBy(asc(user.createdAt))
-  return rows
+
+  // 只取 ref 和更新时间。ciphertext 不进这个查询，列表响应就没有地方漏出明文或密文。
+  const credRows = await db
+    .select({
+      userId: userModelCredential.userId,
+      providerRef: userModelCredential.providerRef,
+      updatedAt: userModelCredential.updatedAt,
+    })
+    .from(userModelCredential)
+  const grouped = new Map<string, Array<{ providerRef: string; updatedAt: Date }>>()
+  for (const cred of credRows) {
+    const list = grouped.get(cred.userId)
+    if (list === undefined) grouped.set(cred.userId, [cred])
+    else list.push(cred)
+  }
+
+  return rows.map((row) => {
+    const modelCredentials = projectModelCredentials(grouped.get(row.id) ?? [])
+    return {
+      ...row,
+      modelCredentialsConfigured: modelCredentials.configured,
+      modelCredentials,
+    }
+  })
 }
 
 export interface AdminInstanceRow {

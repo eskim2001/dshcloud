@@ -3,6 +3,7 @@ import type { InstanceRow } from '../db/schema.js'
 import type { Env } from '../env.js'
 import type { DataStore } from './data-store.js'
 import type { InstanceOrchestrator } from './orchestrator.js'
+import { gateToken } from './gate-token.js'
 import {
   ImageRejectedError,
   ImageUpgradeFailedError,
@@ -28,6 +29,9 @@ vi.mock('../db/image-release-repo.js', () => ({
   isImageRelease: vi.fn(),
 }))
 vi.mock('../db/image-catalog-repo.js', () => ({ isImageInCatalog: vi.fn() }))
+vi.mock('../model-credentials/load.js', () => ({
+  readOwnerModelRefs: vi.fn(async () => ({})),
+}))
 
 const {
   findInstanceById,
@@ -44,6 +48,8 @@ const countRunning = vi.mocked(countRunningInstances)
 const findDefaultRelease = vi.mocked(findDefaultImageRelease)
 const isPublished = vi.mocked(isImageRelease)
 const inCatalog = vi.mocked(isImageInCatalog)
+const { readOwnerModelRefs } = await import('../model-credentials/load.js')
+const readRefs = vi.mocked(readOwnerModelRefs)
 
 const env = {
   BASE_DOMAIN: 'app.example.com',
@@ -105,6 +111,7 @@ interface Fakes {
     listImageTags: ReturnType<typeof vi.fn>
     ensureImage: ReturnType<typeof vi.fn>
     syncRoutes: ReturnType<typeof vi.fn>
+    seedCredentials: ReturnType<typeof vi.fn>
   }
 }
 
@@ -118,6 +125,7 @@ function build(): Fakes {
   const finishRestore = vi.fn(async () => undefined)
   const destroy = vi.fn(async () => undefined)
   const snapshotUsage = vi.fn(async () => undefined)
+  const seedCredentials = vi.fn(async () => false)
 
   const stopInstance = vi.fn(async () => undefined)
   const removeInstance = vi.fn(async () => undefined)
@@ -160,6 +168,7 @@ function build(): Fakes {
     finishRestore,
     snapshotUsage,
     destroy,
+    seedCredentialsFileIfAbsent: seedCredentials,
     ownerId: '502',
   } as unknown as DataStore
 
@@ -198,6 +207,7 @@ function build(): Fakes {
       listImageTags,
       ensureImage,
       syncRoutes,
+      seedCredentials,
     },
   }
 }
@@ -216,6 +226,7 @@ const quota = { cpus: 1, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  readRefs.mockResolvedValue({})
   update.mockImplementation(async (_db, _id, patch) => ({ ...row(), ...patch }) as InstanceRow)
   countRunning.mockResolvedValue(0)
   // 库里有一个默认版本，且任何目标都算「已发布」——要测拒绝的用例自己覆盖
@@ -873,5 +884,101 @@ describe('失败收尾：标 error 之后必须重新投影一次路由', () => 
 
     await expect(makeProvisioner(fakes).restart('i-1')).rejects.toThrow('拉取镜像失败')
     expect(db.current().status).toBe('error')
+  })
+})
+
+const ALPHA = 'fixture-model-key-alpha-9f3c'
+const BETA = 'fixture-model-key-beta-9f3c'
+const EDITED = 'fixture-model-key-edited-9f3c'
+const KEY1 = 'a'.repeat(32)
+const KEY2 = 'b'.repeat(32)
+const KEY3 = 'c'.repeat(32)
+
+describe('用户默认模型 Key 只注入新建工作区', () => {
+  it('没有默认就不写文件', async () => {
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: KEY1 }))
+    const fakes = build()
+    await makeProvisioner(fakes).create({ slug: 'alice', ownerId: 'u1', ...quota })
+    expect(fakes.calls.seedCredentials).not.toHaveBeenCalled()
+    expect(fakes.calls.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ env: {} }),
+      expect.objectContaining({ gateToken: gateToken('alice', env.PLATFORM_SECRET) }),
+    )
+  })
+
+  it('三钉：新工作区带上当时的默认；工作区里改过的不回写；改默认不覆盖旧卷', async () => {
+    const files = new Map<string, Buffer>()
+    const defaults: { current: Record<string, string> } = { current: { DEEPSEEK_API_KEY: ALPHA } }
+    readRefs.mockImplementation(async () => ({ ...defaults.current }))
+    let n = 0
+    const keys = [KEY1, KEY2, KEY3]
+    vi.mocked(createInstanceRecord).mockImplementation(async (_db, input) => {
+      const storageKey = keys[n] ?? KEY1
+      n += 1
+      return row({
+        id: `i-${input.slug}`,
+        slug: input.slug,
+        ownerId: input.ownerId,
+        storageKey,
+      })
+    })
+    const fakes = build()
+    fakes.calls.seedCredentials.mockImplementation(async (key: string, contents: Buffer) => {
+      const id = `${key}/.credentials.yaml`
+      if (files.has(id)) return false
+      files.set(id, Buffer.from(contents))
+      return true
+    })
+    const provisioner = makeProvisioner(fakes)
+
+    await provisioner.create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    const first = files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8') ?? ''
+    expect(first).toContain('version: 1')
+    expect(first).toContain(`DEEPSEEK_API_KEY: ${ALPHA}`)
+    expect(first).toContain('records: {}')
+    expect(first).not.toContain(BETA)
+    const createAt = fakes.calls.createData.mock.invocationCallOrder[0] ?? -1
+    const seedAt = fakes.calls.seedCredentials.mock.invocationCallOrder[0] ?? -1
+    const chownAt = fakes.calls.chown.mock.invocationCallOrder[0] ?? -1
+    const instanceAt = fakes.calls.createInstance.mock.invocationCallOrder[0] ?? -1
+    expect(createAt).toBeLessThan(seedAt)
+    expect(seedAt).toBeLessThan(chownAt)
+    expect(chownAt).toBeLessThan(instanceAt)
+    expect(fakes.calls.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ env: {} }),
+      expect.objectContaining({ gateToken: gateToken('ws1', env.PLATFORM_SECRET) }),
+    )
+    expect(gateToken('ws1', env.PLATFORM_SECRET)).not.toContain(ALPHA)
+
+    // 用户在 W1 里改了 Key。控制面的默认还是 ALPHA，文件不再被写。
+    files.set(`${KEY1}/.credentials.yaml`, Buffer.from(`version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${EDITED}\nrecords: {}\n`))
+    const readsAfterCreate = readRefs.mock.calls.length
+    const seedsAfterCreate = fakes.calls.seedCredentials.mock.calls.length
+    findById.mockImplementation(async (_db, id) => {
+      if (id === 'i-ws1') {
+        return row({ id, slug: 'ws1', ownerId: 'u1', storageKey: KEY1, status: 'stopped', containerId: null })
+      }
+      return undefined
+    })
+    await provisioner.restart('i-ws1')
+    await provisioner.start('i-ws1')
+    expect(readRefs.mock.calls.length).toBe(readsAfterCreate)
+    expect(fakes.calls.seedCredentials.mock.calls.length).toBe(seedsAfterCreate)
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(EDITED)
+    expect(defaults.current).toEqual({ DEEPSEEK_API_KEY: ALPHA })
+
+    await provisioner.create({ slug: 'ws2', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY2}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
+    expect(files.get(`${KEY2}/.credentials.yaml`)?.toString('utf8')).not.toContain(EDITED)
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(EDITED)
+
+    defaults.current = { DEEPSEEK_API_KEY: BETA }
+    await provisioner.restart('i-ws1')
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(EDITED)
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).not.toContain(BETA)
+    await provisioner.create({ slug: 'ws3', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY3}/.credentials.yaml`)?.toString('utf8')).toContain(BETA)
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(EDITED)
+    expect(files.get(`${KEY2}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
   })
 })

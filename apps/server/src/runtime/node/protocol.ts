@@ -43,6 +43,11 @@ export const NodeRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('resizeStorage'), args: z.tuple([key, size]) }).strict(),
   z.object({ method: z.literal('chownStorage'), args: z.tuple([key, z.literal(INSTANCE_UID), z.literal(INSTANCE_GID)]) }).strict(),
   z.object({ method: z.literal('copyStorage'), args: z.tuple([key, key]) }).strict(),
+  // 只接受活卷。快照卷（.prev / .recovery）不能写入模型凭据。正文是 UTF-8 YAML，上限跟节点 body 对齐。
+  z.object({ method: z.literal('seedCredentialsFileIfAbsent'), args: z.tuple([
+    z.string().regex(/^[a-f0-9]{32}$/u),
+    z.string().min(1).max(8192),
+  ]) }).strict(),
   z.object({ method: z.literal('heal'), args: empty }).strict(),
 ])
 export type NodeRequest = z.infer<typeof NodeRequestSchema>

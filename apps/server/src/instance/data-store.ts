@@ -80,6 +80,14 @@ export class DataStore {
   }
 
   /**
+   * 新建卷之后、chown 之前：凭据文件不存在才写。
+   * 不提供读 `.credentials.yaml` 的方法——工作区里改过的 Key 不能被控制面读回来。
+   */
+  async seedCredentialsFileIfAbsent(storageKey: string, contents: Buffer): Promise<boolean> {
+    return this.driver.seedCredentialsFileIfAbsent(storageKey, contents)
+  }
+
+  /**
    * 用量。只用于**展示**。命名卷**没有硬配额**，真正的写上限要宿主侧文件系统配额
    * （XFS project quota，见 `DockerDriver.createStorage`）来兜。**停机时也读得到** ——
    * 卷不依赖容器在跑。

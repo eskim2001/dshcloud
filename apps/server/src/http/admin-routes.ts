@@ -9,6 +9,8 @@ import { INVITE_TTL_HOURS } from '../invitation.js'
 import type { AdminInstanceRow, AdminUserRow, UserQuotaPatch } from '../db/user-repo.js'
 import type { DiskUsed } from './instance-routes.js'
 import type { Env } from '../env.js'
+import type { ModelCredentialPublic } from '../model-credentials/view.js'
+import { CREDENTIAL_REF_PATTERN, FORBIDDEN_CREDENTIAL_REFS, MODEL_KEY_PATTERN, ModelCredentialRejectedError } from '../model-credentials/rules.js'
 import type { QuotaInput } from '../instance/provisioner.js'
 import {
   effectiveInstanceCaps,
@@ -42,6 +44,16 @@ const CreateUserBodySchema = z.object({
 })
 const BanBodySchema = z.object({ reason: z.string().max(200).optional() })
 const RoleBodySchema = z.object({ role: z.enum(['user', 'admin']) })
+/**
+ * 省略的 ref 不出现在对象里（不改）。null 清除该 ref。空串进不了正则，整单拒绝。
+ * UI v1 只发 DEEPSEEK_API_KEY；接口按 map 收，好让以后加 OPENAI 不必改形状。
+ */
+const PutModelCredentialsSchema = z.object({
+  refs: z.record(
+    z.string().regex(CREDENTIAL_REF_PATTERN),
+    z.union([z.string().regex(MODEL_KEY_PATTERN), z.null()]),
+  ),
+}).strict()
 /** 邀请只按邮箱发：链接捡到了也得知道是发给谁的（见 db/invitation-repo.ts）。 */
 const InviteBodySchema = z.object({ email: z.string().trim().email().max(254) })
 const ImageBodySchema = z.object({ image: z.string().min(1).max(255) })
@@ -120,6 +132,17 @@ export interface AdminRouteDeps {
   findOwnerResourceQuotas(instanceId: string): Promise<UserResourceQuotas | undefined>
   /** 授予 / 撤销管理员。`last-admin` = 降的是最后一名管理员，不能降（会自锁）。 */
   setRole(userId: string, role: 'user' | 'admin'): Promise<'ok' | 'missing' | 'last-admin'>
+  /**
+   * 写入用户级默认模型凭据。返回值只有 configured / providerRefs / updatedAt。
+   * 明文只在这个回调的参数里出现一次，响应不得再带回去。
+   */
+  putModelCredentials(
+    userId: string,
+    adminId: string,
+    refs: Record<string, string | null>,
+  ): Promise<'missing' | ModelCredentialPublic>
+  /** 清掉该用户全部默认。不影响已经建好的工作区。 */
+  clearModelCredentials(userId: string): Promise<'missing' | ModelCredentialPublic>
   /** 改实例的 CPU / 内存 / pids。实例不存在 → false。**会重建容器**（几秒中断）。 */
   setInstanceQuota(id: string, quota: QuotaInput): Promise<boolean>
   /** 实例的镜像信息（当前 / 可回滚的上一版 / 数据文件）。实例不存在 → undefined。 */
@@ -347,6 +370,39 @@ export async function registerAdminRoutes(
       if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
       if (result === 'last-admin') return reply.code(400).send({ error: '不能降级最后一名管理员' })
       return { ok: true }
+    })
+
+    /**
+     * 设置用户级默认模型 Key。响应只有「配了哪些 ref」，没有明文。
+     * 校验失败也不把请求体回显出去——空串、非法字符都是同一句。
+     */
+    scope.put('/api/admin/users/:id/model-credentials', async (req: AuthedRequest, reply) => {
+      const adminId = req.adminId
+      if (adminId === undefined) return reply.code(401).send({ error: '未登录' })
+      const { id } = req.params as { id: string }
+      const parsed = PutModelCredentialsSchema.safeParse(req.body)
+      if (!parsed.success) return reply.code(400).send({ error: '模型 Key 不合法' })
+      for (const ref of Object.keys(parsed.data.refs)) {
+        if (FORBIDDEN_CREDENTIAL_REFS.has(ref)) return reply.code(400).send({ error: '模型 Key 不合法' })
+      }
+      try {
+        const result = await deps.putModelCredentials(id, adminId, parsed.data.refs)
+        if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
+        return { modelCredentials: result }
+      } catch (err) {
+        if (err instanceof ModelCredentialRejectedError) {
+          return reply.code(400).send({ error: '模型 Key 不合法' })
+        }
+        req.log.error({ name: err instanceof Error ? err.name : 'Error' }, '保存模型凭据失败')
+        return reply.code(500).send({ error: '保存模型 Key 失败' })
+      }
+    })
+
+    scope.delete('/api/admin/users/:id/model-credentials', async (req: AuthedRequest, reply) => {
+      const { id } = req.params as { id: string }
+      const result = await deps.clearModelCredentials(id)
+      if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
+      return { modelCredentials: result }
     })
 
     /**

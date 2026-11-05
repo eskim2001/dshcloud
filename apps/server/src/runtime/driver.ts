@@ -108,6 +108,14 @@ export interface RuntimeDriver {
    * —— 判据是目录的**实际属主**，不是库里的某条状态（记状态的那种做法在这里会骗人）。
    */
   chownStorage(key: string, uid: number, gid: number): Promise<void>
+  /**
+   * 仅在数据卷刚创建之后调用：`$DSH_HOME/.credentials.yaml` 不存在才写入。
+   *
+   * 已存在（含符号链接）就跳过，并且**不读内容**。这里没有对应的读接口——
+   * 控制面不回读工作区里的模型 Key。权限 0600；属主靠紧接着的 `chownStorage`
+   * 覆盖到这个文件（脚本会扫隐藏文件）。返回值只表示这次有没有写入。
+   */
+  seedCredentialsFileIfAbsent(key: string, contents: Buffer): Promise<boolean>
   /** 删掉这一块卷。幂等。**只删这一个 key** —— 快照卷是上层的事（见 `DataStore`）。 */
   removeStorage(key: string): Promise<void>
   /**

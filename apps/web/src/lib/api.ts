@@ -367,6 +367,13 @@ export interface AdminUser {
   diskMbQuota: number | null
   instanceCount: number
   createdAt: string
+  /** 是否配过用户级默认模型 Key。不含明文。 */
+  modelCredentialsConfigured: boolean
+  modelCredentials: {
+    configured: boolean
+    providerRefs: string[]
+    updatedAt: string | null
+  }
 }
 
 export interface AdminInstance {
@@ -455,6 +462,22 @@ export async function setUserQuota(id: string, patch: UserQuotaPatch): Promise<v
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
+}
+
+export async function putUserModelCredentials(
+  id: string,
+  body: { refs: Record<string, string | null> },
+): Promise<{ modelCredentials: AdminUser['modelCredentials'] }> {
+  return request(`/api/admin/users/${id}/model-credentials`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function clearUserModelCredentials(
+  id: string,
+): Promise<{ modelCredentials: AdminUser['modelCredentials'] }> {
+  return request(`/api/admin/users/${id}/model-credentials`, { method: 'DELETE' })
 }
 
 /** 授予 / 撤销管理员。最后一名管理员不能降级（后端 400）。 */

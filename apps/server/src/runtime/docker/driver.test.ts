@@ -33,6 +33,7 @@ function notFound(): Error {
 interface CreateArgs {
   name: string
   Cmd?: string[]
+  Env?: string[]
   HostConfig?: {
     NetworkMode?: string
     Binds?: string[]
@@ -49,6 +50,7 @@ interface FakeOptions {
   containers?: string[]
   volumes?: string[]
   createNetworkError?: Error
+  execExit?: number
 }
 
 /**
@@ -64,6 +66,9 @@ function fakeDocker(opts: FakeOptions = {}) {
   const volumes = new Set(opts.volumes ?? ['vol-alice'])
   let lastCreate: CreateArgs | undefined
   let lastNetwork: { Name: string; Labels?: Record<string, string> } | undefined
+  let execExit = opts.execExit ?? 0
+  const execs: string[][] = []
+  const archives: Buffer[] = []
 
   const raw = {
     listContainers: async () => opts.liveMounts ?? [],
@@ -116,6 +121,14 @@ function fakeDocker(opts: FakeOptions = {}) {
         wait: async () => ({ StatusCode: 0 }),
         logs: async () => Buffer.from('123\n'),
         remove: async () => calls.push(`container.remove:${o.name}`),
+        exec: async (spec: { Cmd: string[] }) => {
+          execs.push(spec.Cmd)
+          return {
+            start: async () => ({ async *[Symbol.asyncIterator]() { /* 不产生输出 */ } }),
+            inspect: async () => ({ ExitCode: execExit }),
+          }
+        },
+        putArchive: async (file: Buffer) => { archives.push(file) },
       }
     },
   }
@@ -126,6 +139,9 @@ function fakeDocker(opts: FakeOptions = {}) {
     calls,
     lastCreate: () => lastCreate,
     lastNetwork: () => lastNetwork,
+    execs,
+    archives,
+    setExecExit: (code: number) => { execExit = code },
   }
 }
 
@@ -444,6 +460,47 @@ describe('DockerDriver 的数据属主迁移', () => {
     // 文件压根没建 = 脚本一次都没执行过
     await expect(readFile(log, 'utf8')).rejects.toThrow()
   })
+
+  it('池化：凭据文件不存在才写，0600，已存在或是符号链接都不覆盖', async () => {
+    const { driver, root, dir } = await pooled()
+    const fixture = 'fixture-model-key-alpha-9f3c'
+    const body = Buffer.from(`version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${fixture}\nrecords: {}\n`)
+    try {
+      expect(await driver.seedCredentialsFileIfAbsent(KEY, body)).toBe(true)
+      const path = join(dir, '.credentials.yaml')
+      expect((await stat(path)).mode & 0o777).toBe(0o600)
+      expect(await readFile(path, 'utf8')).toBe(body.toString('utf8'))
+      expect(await driver.seedCredentialsFileIfAbsent(KEY, Buffer.from('version: 1\nrefs:\n  DEEPSEEK_API_KEY: fixture-model-key-beta-9f3c\nrecords: {}\n'))).toBe(false)
+      expect(await readFile(path, 'utf8')).toContain(fixture)
+      expect(await readFile(path, 'utf8')).not.toContain('fixture-model-key-beta-9f3c')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+
+    const again = await pooled()
+    const outside = join(again.root, 'outside')
+    await writeFile(outside, 'sentinel-outside')
+    await symlink(outside, join(again.dir, '.credentials.yaml'))
+    try {
+      expect(await again.driver.seedCredentialsFileIfAbsent(KEY, body)).toBe(false)
+      expect(await readFile(outside, 'utf8')).toBe('sentinel-outside')
+    } finally {
+      await rm(again.root, { recursive: true, force: true })
+    }
+  })
+
+  it('池化：chown 会扫到 .credentials.yaml', async () => {
+    const { driver, root, dir } = await pooled()
+    await writeFile(join(dir, '.credentials.yaml'), 'version: 1\n', { mode: 0o600 })
+    const log = join(root, 'chown.log')
+    try {
+      await withFakeChown(log, () => driver.chownStorage(KEY, 4242, 4242))
+      const lines = (await readFile(log, 'utf8')).trim().split('\n')
+      expect(lines).toContain(`-hR 4242:4242 ${join(dir, '.credentials.yaml')}`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 /**
@@ -476,3 +533,37 @@ async function withFakeChown<T>(logPath: string, fn: () => Promise<T>): Promise<
     else process.env.DSH_TEST_CHOWN_LOG = savedLog
   }
 }
+
+describe('命名卷上的凭据文件', () => {
+  const KEY = 'c'.repeat(32)
+  const fixture = 'fixture-model-key-alpha-9f3c'
+
+  it('不把 Key 放进容器参数；文件已在则不解包', async () => {
+    const body = Buffer.from(`version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${fixture}\nrecords: {}\n`)
+    const f = fakeDocker({ volumes: [KEY] })
+    withHelperImage(f)
+    expect(await driverOf(f).seedCredentialsFileIfAbsent(KEY, body)).toBe(true)
+    const created = JSON.stringify(f.lastCreate())
+    expect(created).not.toContain(fixture)
+    expect(f.lastCreate()?.Env).toBeUndefined()
+    expect(f.lastCreate()?.Cmd).toEqual(['sleep', '30'])
+    expect(f.lastCreate()?.HostConfig?.NetworkMode).toBe('none')
+    expect(f.lastCreate()?.HostConfig?.Binds).toEqual([`${KEY}:/_src`])
+    expect(f.execs.some((cmd) => cmd.join(' ').includes(fixture))).toBe(false)
+    expect(f.archives).toHaveLength(1)
+    expect(f.archives[0]?.includes(body)).toBe(true)
+    expect(f.execs.at(-1)?.slice(0, 2)).toEqual(['chmod', '0600'])
+
+    f.setExecExit(3)
+    f.archives.length = 0
+    expect(await driverOf(f).seedCredentialsFileIfAbsent(KEY, Buffer.from(`version: 1\nrefs:\n  DEEPSEEK_API_KEY: fixture-model-key-beta-9f3c\nrecords: {}\n`))).toBe(false)
+    expect(f.archives).toHaveLength(0)
+  })
+
+  it('卷不存在就不建辅助容器', async () => {
+    const f = fakeDocker({ volumes: [] })
+    withHelperImage(f)
+    await expect(driverOf(f).seedCredentialsFileIfAbsent(KEY, Buffer.from('version: 1\n'))).rejects.toThrow(/不存在/)
+    expect(f.calls.some((call) => call.startsWith('container.create'))).toBe(false)
+  })
+})

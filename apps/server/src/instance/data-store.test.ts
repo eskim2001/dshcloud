@@ -2,6 +2,33 @@ import { describe, expect, it, vi } from 'vitest'
 import { DataStore } from './data-store.js'
 import { StorageNotFoundError, type RuntimeDriver } from '../runtime/driver.js'
 
+describe('凭据文件只在不存在时写', () => {
+  it('第一次写入，已存在则不覆盖，且没有读接口', async () => {
+    const files = new Map<string, Buffer>()
+    const writes: string[] = []
+    const store = new DataStore({ driver: {
+      seedCredentialsFileIfAbsent: async (key: string, contents: Buffer) => {
+        writes.push(key)
+        const id = `${key}/.credentials.yaml`
+        if (files.has(id)) return false
+        files.set(id, Buffer.from(contents))
+        return true
+      },
+    } as unknown as RuntimeDriver })
+    const body = Buffer.from('version: 1\nrefs:\n  DEEPSEEK_API_KEY: fixture-model-key-alpha-9f3c\nrecords: {}\n')
+    expect(await store.seedCredentialsFileIfAbsent('vol', body)).toBe(true)
+    files.set('vol/.credentials.yaml', Buffer.from('user-edited'))
+    expect(await store.seedCredentialsFileIfAbsent('vol', Buffer.from('version: 1\nrefs:\n  DEEPSEEK_API_KEY: fixture-model-key-beta-9f3c\nrecords: {}\n'))).toBe(false)
+    expect(files.get('vol/.credentials.yaml')?.toString('utf8')).toBe('user-edited')
+    expect(writes).toEqual(['vol', 'vol'])
+    const names = Object.getOwnPropertyNames(DataStore.prototype)
+    expect(names.filter((name) => name.toLowerCase().includes('credential'))).toEqual([
+      'seedCredentialsFileIfAbsent',
+    ])
+    expect(names.some((name) => /read/i.test(name) && /credential/i.test(name))).toBe(false)
+  })
+})
+
 describe('snapshot restore prerequisites', () => {
   it.each([new StorageNotFoundError('missing snapshot'), new Error('invalid snapshot directory')])(
     'preserves live data when the snapshot cannot be validated: %s', async failure => {

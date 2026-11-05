@@ -19,6 +19,8 @@ import { findDefaultImageRelease, isImageRelease } from '../db/image-release-rep
 import { isImageInCatalog } from '../db/image-catalog-repo.js'
 import type { InstanceRow } from '../db/schema.js'
 import type { Env } from '../env.js'
+import { renderCredentialsYaml } from '../model-credentials/document.js'
+import { readOwnerModelRefs } from '../model-credentials/load.js'
 import type { DataStore } from './data-store.js'
 import { gateToken } from './gate-token.js'
 import { imageRepo, isReleaseTag } from './image-catalog.js'
@@ -584,8 +586,14 @@ export class InstanceProvisioner {
     // 数据目录没就位就直接抛，实例标 error——绝不能建出一个指向空目录的实例：
     // 那样实例照常跑、UI 照常绿，用户看到的是「数据没了」（D18 的铁律）。
     // 只有建实例这条路允许「建」；其余一律只 ensure，缺了就报错。
-    if (opts.createData === true) await this.dataStore.create(row.storageKey, row.diskMb)
-    else await this.dataStore.ensure(row.storageKey)
+    if (opts.createData === true) {
+      await this.dataStore.create(row.storageKey, row.diskMb)
+      // 用户默认只在卷第一次诞生时落下。restart / 换镜像 / 回滚走下面的 ensure，
+      // 不读、不写 `.credentials.yaml`，所以工作区里改过的 Key 不会回写，也不会被盖掉。
+      await this.seedOwnerModelCredentials(row)
+    } else {
+      await this.dataStore.ensure(row.storageKey)
+    }
 
     // Download failures must not stop an otherwise usable workspace.
     await this.orchestrator.ensureImage(row.image)
@@ -596,6 +604,7 @@ export class InstanceProvisioner {
     // ——漏了这一步，实例照常起、入口照常响应，agent 跑到一半才写不了盘（**静默失败**）。
     // 幂等且判据是**目录的实际属主**，所以每次建容器都调；回滚把旧数据（root 属主）盖回来时，
     // 它自然会把那一份重新迁一遍。
+    // chown 在凭据文件之后：脚本会扫到隐藏文件，把刚写入的 `.credentials.yaml` 改成 1000:1000。
     await this.dataStore.chown(row.storageKey)
 
     // 宿主端口：**已有就沿用**——重启不能换地址，否则 Traefik 的路由会指向别处。
@@ -625,6 +634,17 @@ export class InstanceProvisioner {
     })
     await this.syncRoutes()
     return updated ?? row
+  }
+
+  /**
+   * 有用户默认才渲染 YAML 并写入。没有默认就不创建文件，让用户稍后在工作区里自填。
+   * 明文只活在这次调用的栈上，不进 lastError（渲染 / 解密失败的文案是固定的）。
+   */
+  private async seedOwnerModelCredentials(row: InstanceRow): Promise<void> {
+    const refs = await readOwnerModelRefs(this.db, this.env.PLATFORM_SECRET, row.ownerId)
+    if (Object.keys(refs).length === 0) return
+    const yaml = renderCredentialsYaml(refs)
+    await this.dataStore.seedCredentialsFileIfAbsent(row.storageKey, Buffer.from(yaml, 'utf8'))
   }
 
   /** 分配宿主回环端口。判据 = 「DB 里没占 且 宿主上真的空闲」。 */

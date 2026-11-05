@@ -43,6 +43,8 @@ const EXPECTED_ROUTES = [
   { method: 'POST', url: '/api/admin/users/:id/unban' },
   { method: 'PATCH', url: '/api/admin/users/:id/quota' },
   { method: 'PATCH', url: '/api/admin/users/:id/role' },
+  { method: 'PUT', url: '/api/admin/users/:id/model-credentials' },
+  { method: 'DELETE', url: '/api/admin/users/:id/model-credentials' },
   { method: 'PATCH', url: '/api/admin/instances/:id/quota' },
   { method: 'GET', url: '/api/admin/instances/:id/image' },
   { method: 'PATCH', url: '/api/admin/instances/:id/image' },
@@ -125,6 +127,8 @@ async function build(
     streamLogs: async () => {},
     getSessionUser: async () => session,
     createUser: async (input) => ({ id: 'created', email: input.email }),
+    putModelCredentials: async () => ({ configured: false, providerRefs: [], updatedAt: null }),
+    clearModelCredentials: async () => ({ configured: false, providerRefs: [], updatedAt: null }),
     // 邀请：默认能生成。用例自己覆盖「邮箱已存在 / 已有待接受邀请」
     createInvite: async () => ({
       ok: true as const,
@@ -177,6 +181,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     const syncImages = vi.fn(async () => ({ count: 0, skipped: 0, syncedAt: new Date(0) }))
     const pullImageStream = vi.fn(async () => Readable.from([]))
     const createUser = vi.fn(async (input: { email: string }) => ({ id: 'created', email: input.email }))
+    const putModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [] as string[], updatedAt: null }))
+    const clearModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [] as string[], updatedAt: null }))
     const { app } = await build(USER, {
       ban,
       setQuota,
@@ -190,6 +196,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
       syncImages,
       pullImageStream,
       createUser,
+      putModelCredentials,
+      clearModelCredentials,
     })
     for (const route of ATTACKS) {
       await call(app, route)
@@ -206,6 +214,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     expect(syncImages).not.toHaveBeenCalled()
     expect(pullImageStream).not.toHaveBeenCalled()
     expect(createUser).not.toHaveBeenCalled()
+    expect(putModelCredentials).not.toHaveBeenCalled()
+    expect(clearModelCredentials).not.toHaveBeenCalled()
   })
 
   it('普通账号不能用请求体和身份头把自己提升为管理员', async () => {
@@ -325,6 +335,8 @@ describe('平台管理面：管理员路径', () => {
           diskMbQuota: 5120,
           instanceCount: 1,
           createdAt: new Date(0),
+          modelCredentialsConfigured: false,
+          modelCredentials: { configured: false, providerRefs: [], updatedAt: null },
         },
       ],
     })
@@ -979,5 +991,123 @@ describe('管理员直接设账密建号', () => {
     })
     expect(res.statusCode).toBe(409)
     expect(res.json().error).toBe('账号已存在')
+  })
+})
+
+const FIXTURE_KEY = 'fixture-model-key-alpha-9f3c'
+
+describe('用户级模型凭据', () => {
+  it('PUT 接受 map，响应和 GET 都不含明文', async () => {
+    const putModelCredentials = vi.fn(async () => ({
+      configured: true,
+      providerRefs: ['DEEPSEEK_API_KEY'],
+      updatedAt: new Date(0),
+    }))
+    const { app } = await build(ADMIN, {
+      putModelCredentials,
+      listUsers: async () => [
+        {
+          id: 'u-x',
+          email: 'ada@example.com',
+          name: 'Ada',
+          role: 'user',
+          banned: false,
+          banReason: null,
+          instanceQuota: null,
+          cpuQuota: null,
+          memoryMbQuota: null,
+          pidsQuota: null,
+          diskMbQuota: null,
+          instanceCount: 0,
+          createdAt: new Date(0),
+          modelCredentialsConfigured: true,
+          modelCredentials: {
+            configured: true,
+            providerRefs: ['DEEPSEEK_API_KEY'],
+            updatedAt: new Date(0),
+          },
+        },
+      ],
+    })
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/u-x/model-credentials',
+      payload: { refs: { DEEPSEEK_API_KEY: FIXTURE_KEY, OPENAI_API_KEY: 'fixture-model-key-beta-9f3c' } },
+    })
+    expect(put.statusCode).toBe(200)
+    expect(put.body).not.toContain(FIXTURE_KEY)
+    expect(put.body).not.toContain('fixture-model-key-beta-9f3c')
+    expect(put.json()).toEqual({
+      modelCredentials: {
+        configured: true,
+        providerRefs: ['DEEPSEEK_API_KEY'],
+        updatedAt: new Date(0).toISOString(),
+      },
+    })
+    expect(putModelCredentials).toHaveBeenCalledWith('u-x', ADMIN.id, {
+      DEEPSEEK_API_KEY: FIXTURE_KEY,
+      OPENAI_API_KEY: 'fixture-model-key-beta-9f3c',
+    })
+
+    const listed = await app.inject({ method: 'GET', url: '/api/admin/users' })
+    expect(listed.body).not.toContain(FIXTURE_KEY)
+    expect(listed.json().users[0].modelCredentials).toEqual({
+      configured: true,
+      providerRefs: ['DEEPSEEK_API_KEY'],
+      updatedAt: new Date(0).toISOString(),
+    })
+    expect(listed.json().users[0].modelCredentialsConfigured).toBe(true)
+  })
+
+  it('空串、入口 token 名字和多余字段都拒绝，且不调用写入', async () => {
+    const putModelCredentials = vi.fn()
+    const { app } = await build(ADMIN, { putModelCredentials })
+    for (const payload of [
+      { refs: { DEEPSEEK_API_KEY: '' } },
+      { refs: { DEEPSEEK_API_KEY: 'has space' } },
+      { refs: { DSH_LAUNCH_TOKEN: FIXTURE_KEY } },
+      { refs: { DEEPSEEK_API_KEY: FIXTURE_KEY }, extra: true },
+      {},
+    ]) {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/users/u-x/model-credentials',
+        payload,
+      })
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400)
+      expect(res.body).not.toContain(FIXTURE_KEY)
+    }
+    expect(putModelCredentials).not.toHaveBeenCalled()
+  })
+
+  it('显式 null 表示清除该 ref；DELETE 清全部；用户不存在是 404', async () => {
+    const putModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [], updatedAt: null }))
+    const clearModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [], updatedAt: null }))
+    const { app } = await build(ADMIN, { putModelCredentials, clearModelCredentials })
+    const cleared = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/u-x/model-credentials',
+      payload: { refs: { DEEPSEEK_API_KEY: null } },
+    })
+    expect(cleared.statusCode).toBe(200)
+    expect(putModelCredentials).toHaveBeenCalledWith('u-x', ADMIN.id, { DEEPSEEK_API_KEY: null })
+    const all = await app.inject({ method: 'DELETE', url: '/api/admin/users/u-x/model-credentials' })
+    expect(all.statusCode).toBe(200)
+    expect(all.json()).toEqual({ modelCredentials: { configured: false, providerRefs: [], updatedAt: null } })
+    expect(clearModelCredentials).toHaveBeenCalledWith('u-x')
+
+    const missing = await build(ADMIN, {
+      putModelCredentials: async () => 'missing',
+      clearModelCredentials: async () => 'missing',
+    })
+    expect((await missing.app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/nobody/model-credentials',
+      payload: { refs: { DEEPSEEK_API_KEY: FIXTURE_KEY } },
+    })).statusCode).toBe(404)
+    expect((await missing.app.inject({
+      method: 'DELETE',
+      url: '/api/admin/users/nobody/model-credentials',
+    })).statusCode).toBe(404)
   })
 })
