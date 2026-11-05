@@ -9,6 +9,8 @@ import { INVITE_TTL_HOURS } from '../invitation.js'
 import type { AdminInstanceRow, AdminUserRow, UserQuotaPatch } from '../db/user-repo.js'
 import type { DiskUsed } from './instance-routes.js'
 import type { Env } from '../env.js'
+import type { CustomModelPublic } from '../model-credentials/custom-model.js'
+import { CustomModelRejectedError } from '../model-credentials/custom-model.js'
 import type { ModelCredentialPublic } from '../model-credentials/view.js'
 import { CREDENTIAL_REF_PATTERN, FORBIDDEN_CREDENTIAL_REFS, MODEL_KEY_PATTERN, ModelCredentialRejectedError } from '../model-credentials/rules.js'
 import type { QuotaInput } from '../instance/provisioner.js'
@@ -53,6 +55,20 @@ const PutModelCredentialsSchema = z.object({
     z.string().regex(CREDENTIAL_REF_PATTERN),
     z.union([z.string().regex(MODEL_KEY_PATTERN), z.null()]),
   ),
+}).strict()
+const MODEL_ID_PATTERN = /^[A-Za-z0-9._:@+/-]{1,128}$/
+/**
+ * 省略 apiKey = 不改 Key。null = 清掉本通道的 ref。空串进不了正则，整单拒绝。
+ * baseUrl 必填；空串拒绝。协议 MVP 只收 openai-completions。
+ */
+const PutCustomModelSchema = z.object({
+  baseUrl: z.string().trim().min(1).max(2048),
+  apiKey: z.union([z.string().regex(MODEL_KEY_PATTERN), z.null()]).optional(),
+  providerId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+  displayName: z.string().trim().min(1).max(80).nullable().optional(),
+  api: z.literal('openai-completions').optional(),
+  apiKeyEnv: z.string().regex(CREDENTIAL_REF_PATTERN).optional(),
+  modelIds: z.array(z.string().regex(MODEL_ID_PATTERN)).max(32).optional(),
 }).strict()
 /** 邀请只按邮箱发：链接捡到了也得知道是发给谁的（见 db/invitation-repo.ts）。 */
 const InviteBodySchema = z.object({ email: z.string().trim().email().max(254) })
@@ -143,6 +159,26 @@ export interface AdminRouteDeps {
   ): Promise<'missing' | ModelCredentialPublic>
   /** 清掉该用户全部默认。不影响已经建好的工作区。 */
   clearModelCredentials(userId: string): Promise<'missing' | ModelCredentialPublic>
+  /**
+   * 写入用户级默认 Custom 通道。响应回显非密字段和 keyConfigured，没有明文 Key。
+   */
+  putCustomModel(
+    userId: string,
+    adminId: string,
+    body: {
+      baseUrl: string
+      apiKey?: string | null | undefined
+      providerId?: string | undefined
+      displayName?: string | null | undefined
+      api?: string | undefined
+      apiKeyEnv?: string | undefined
+      modelIds?: string[] | undefined
+    },
+  ): Promise<'missing' | { customModelConfigured: boolean; customModel: CustomModelPublic | null }>
+  /** 清掉 Custom 行和它指向的那一个 ref。不动无关的 DEEPSEEK_API_KEY。 */
+  clearCustomModel(
+    userId: string,
+  ): Promise<'missing' | { customModelConfigured: boolean; customModel: CustomModelPublic | null }>
   /** 改实例的 CPU / 内存 / pids。实例不存在 → false。**会重建容器**（几秒中断）。 */
   setInstanceQuota(id: string, quota: QuotaInput): Promise<boolean>
   /** 实例的镜像信息（当前 / 可回滚的上一版 / 数据文件）。实例不存在 → undefined。 */
@@ -403,6 +439,39 @@ export async function registerAdminRoutes(
       const result = await deps.clearModelCredentials(id)
       if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
       return { modelCredentials: result }
+    })
+
+    /**
+     * 设置用户级默认 Custom 模型接口。响应回显 base URL 等非密字段，不回显 Key。
+     * 校验失败也不把请求体回显出去。
+     */
+    scope.put('/api/admin/users/:id/custom-model', async (req: AuthedRequest, reply) => {
+      const adminId = req.adminId
+      if (adminId === undefined) return reply.code(401).send({ error: '未登录' })
+      const { id } = req.params as { id: string }
+      const parsed = PutCustomModelSchema.safeParse(req.body)
+      if (!parsed.success) return reply.code(400).send({ error: '自定义模型配置不合法' })
+      if (parsed.data.apiKeyEnv !== undefined && FORBIDDEN_CREDENTIAL_REFS.has(parsed.data.apiKeyEnv)) {
+        return reply.code(400).send({ error: '自定义模型配置不合法' })
+      }
+      try {
+        const result = await deps.putCustomModel(id, adminId, parsed.data)
+        if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
+        return result
+      } catch (err) {
+        if (err instanceof CustomModelRejectedError || err instanceof ModelCredentialRejectedError) {
+          return reply.code(400).send({ error: '自定义模型配置不合法' })
+        }
+        req.log.error({ name: err instanceof Error ? err.name : 'Error' }, '保存自定义模型失败')
+        return reply.code(500).send({ error: '保存自定义模型失败' })
+      }
+    })
+
+    scope.delete('/api/admin/users/:id/custom-model', async (req: AuthedRequest, reply) => {
+      const { id } = req.params as { id: string }
+      const result = await deps.clearCustomModel(id)
+      if (result === 'missing') return reply.code(404).send({ error: '用户不存在' })
+      return result
     })
 
     /**

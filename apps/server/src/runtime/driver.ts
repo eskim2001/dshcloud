@@ -116,6 +116,15 @@ export interface RuntimeDriver {
    * 覆盖到这个文件（脚本会扫隐藏文件）。返回值只表示这次有没有写入。
    */
   seedCredentialsFileIfAbsent(key: string, contents: Buffer): Promise<boolean>
+  /**
+   * 仅在数据卷刚创建之后调用：`$DSH_HOME/profiles/web/cordis.patch.yml` 不存在才写入。
+   *
+   * 父目录不存在则创建。已存在（含符号链接）就跳过，并且**不读内容**。
+   * 路径写死在这条原语上，不接受调用方指定别的相对路径，也不提供读接口。
+   * 权限 0640；属主靠紧接着的 `chownStorage` 覆盖（脚本会扫到 `profiles/`）。
+   * 返回值只表示这次有没有写入。
+   */
+  seedCordisPatchIfAbsent(key: string, contents: Buffer): Promise<boolean>
   /** 删掉这一块卷。幂等。**只删这一个 key** —— 快照卷是上层的事（见 `DataStore`）。 */
   removeStorage(key: string): Promise<void>
   /**

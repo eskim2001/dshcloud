@@ -31,6 +31,7 @@ vi.mock('../db/image-release-repo.js', () => ({
 vi.mock('../db/image-catalog-repo.js', () => ({ isImageInCatalog: vi.fn() }))
 vi.mock('../model-credentials/load.js', () => ({
   readOwnerModelRefs: vi.fn(async () => ({})),
+  readOwnerCustomModel: vi.fn(async () => null),
 }))
 
 const {
@@ -48,8 +49,9 @@ const countRunning = vi.mocked(countRunningInstances)
 const findDefaultRelease = vi.mocked(findDefaultImageRelease)
 const isPublished = vi.mocked(isImageRelease)
 const inCatalog = vi.mocked(isImageInCatalog)
-const { readOwnerModelRefs } = await import('../model-credentials/load.js')
+const { readOwnerCustomModel, readOwnerModelRefs } = await import('../model-credentials/load.js')
 const readRefs = vi.mocked(readOwnerModelRefs)
+const readCustom = vi.mocked(readOwnerCustomModel)
 
 const env = {
   BASE_DOMAIN: 'app.example.com',
@@ -112,6 +114,7 @@ interface Fakes {
     ensureImage: ReturnType<typeof vi.fn>
     syncRoutes: ReturnType<typeof vi.fn>
     seedCredentials: ReturnType<typeof vi.fn>
+    seedPatch: ReturnType<typeof vi.fn>
   }
 }
 
@@ -126,6 +129,7 @@ function build(): Fakes {
   const destroy = vi.fn(async () => undefined)
   const snapshotUsage = vi.fn(async () => undefined)
   const seedCredentials = vi.fn(async () => false)
+  const seedPatch = vi.fn(async () => false)
 
   const stopInstance = vi.fn(async () => undefined)
   const removeInstance = vi.fn(async () => undefined)
@@ -169,6 +173,7 @@ function build(): Fakes {
     snapshotUsage,
     destroy,
     seedCredentialsFileIfAbsent: seedCredentials,
+    seedCordisPatchIfAbsent: seedPatch,
     ownerId: '502',
   } as unknown as DataStore
 
@@ -208,6 +213,7 @@ function build(): Fakes {
       ensureImage,
       syncRoutes,
       seedCredentials,
+      seedPatch,
     },
   }
 }
@@ -227,6 +233,7 @@ const quota = { cpus: 1, memoryMb: 2048, pidsLimit: 512, diskMb: 10_240 }
 beforeEach(() => {
   vi.clearAllMocks()
   readRefs.mockResolvedValue({})
+  readCustom.mockResolvedValue(null)
   update.mockImplementation(async (_db, _id, patch) => ({ ...row(), ...patch }) as InstanceRow)
   countRunning.mockResolvedValue(0)
   // 库里有一个默认版本，且任何目标都算「已发布」——要测拒绝的用例自己覆盖
@@ -900,6 +907,7 @@ describe('用户默认模型 Key 只注入新建工作区', () => {
     const fakes = build()
     await makeProvisioner(fakes).create({ slug: 'alice', ownerId: 'u1', ...quota })
     expect(fakes.calls.seedCredentials).not.toHaveBeenCalled()
+    expect(fakes.calls.seedPatch).not.toHaveBeenCalled()
     expect(fakes.calls.createInstance).toHaveBeenCalledWith(
       expect.objectContaining({ env: {} }),
       expect.objectContaining({ gateToken: gateToken('alice', env.PLATFORM_SECRET) }),
@@ -980,5 +988,211 @@ describe('用户默认模型 Key 只注入新建工作区', () => {
     expect(files.get(`${KEY3}/.credentials.yaml`)?.toString('utf8')).toContain(BETA)
     expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(EDITED)
     expect(files.get(`${KEY2}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
+    expect(fakes.calls.seedPatch).not.toHaveBeenCalled()
+  })
+})
+
+const CUSTOM_URL = 'https://example.test/v1'
+const PLACEHOLDER = '__dshcloud_fetch_models__'
+
+describe('用户默认 Custom 模型只注入新建工作区', () => {
+  const customOf = (modelIds: string[] = []) => ({
+    providerId: 'cliproxy',
+    displayName: 'CLIProxyAPI',
+    baseUrl: CUSTOM_URL,
+    api: 'openai-completions',
+    apiKeyEnv: 'CLIPROXY_API_KEY',
+    modelIds,
+  })
+
+  function filesOf(fakes: Fakes) {
+    const files = new Map<string, Buffer>()
+    fakes.calls.seedCredentials.mockImplementation(async (key: string, contents: Buffer) => {
+      const id = `${key}/.credentials.yaml`
+      if (files.has(id)) return false
+      files.set(id, Buffer.from(contents))
+      return true
+    })
+    fakes.calls.seedPatch.mockImplementation(async (key: string, contents: Buffer) => {
+      const id = `${key}/profiles/web/cordis.patch.yml`
+      if (files.has(id)) return false
+      files.set(id, Buffer.from(contents))
+      return true
+    })
+    return files
+  }
+
+  it('配置完整时两个文件各写一次，且不把 Key 放进容器 env', async () => {
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: KEY1, slug: 'ws1' }))
+    readRefs.mockResolvedValue({ CLIPROXY_API_KEY: ALPHA, DEEPSEEK_API_KEY: BETA })
+    readCustom.mockResolvedValue(customOf(['model-a', 'model-b']))
+    const fakes = build()
+    const files = filesOf(fakes)
+    await makeProvisioner(fakes).create({ slug: 'ws1', ownerId: 'u1', ...quota })
+
+    const cred = files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8') ?? ''
+    const patch = files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8') ?? ''
+    expect(cred).toContain(`CLIPROXY_API_KEY: ${ALPHA}`)
+    expect(cred).toContain(`DEEPSEEK_API_KEY: ${BETA}`)
+    expect(cred).not.toContain(CUSTOM_URL)
+    expect(patch).toContain('id: llm-pi-ai')
+    expect(patch).toContain('baseURL: https://example.test/v1')
+    expect(patch).toContain('id: model-a')
+    expect(patch).toContain('id: model-b')
+    expect(patch).not.toContain('DEEPSEEK_BASE_URL')
+    expect(patch).not.toContain(ALPHA)
+    expect(fakes.calls.seedCredentials).toHaveBeenCalledTimes(1)
+    expect(fakes.calls.seedPatch).toHaveBeenCalledTimes(1)
+    const createAt = fakes.calls.createData.mock.invocationCallOrder[0] ?? -1
+    const credAt = fakes.calls.seedCredentials.mock.invocationCallOrder[0] ?? -1
+    const patchAt = fakes.calls.seedPatch.mock.invocationCallOrder[0] ?? -1
+    const chownAt = fakes.calls.chown.mock.invocationCallOrder[0] ?? -1
+    const instanceAt = fakes.calls.createInstance.mock.invocationCallOrder[0] ?? -1
+    expect(createAt).toBeLessThan(credAt)
+    expect(credAt).toBeLessThan(patchAt)
+    expect(patchAt).toBeLessThan(chownAt)
+    expect(chownAt).toBeLessThan(instanceAt)
+    expect(fakes.calls.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ env: {} }),
+      expect.anything(),
+    )
+  })
+
+  it('只有 DeepSeek Key、没有 Custom base URL 时只写凭据', async () => {
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: KEY1 }))
+    readRefs.mockResolvedValue({ DEEPSEEK_API_KEY: ALPHA })
+    readCustom.mockResolvedValue(null)
+    const fakes = build()
+    const files = filesOf(fakes)
+    await makeProvisioner(fakes).create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
+    expect(files.has(`${KEY1}/profiles/web/cordis.patch.yml`)).toBe(false)
+    expect(fakes.calls.seedPatch).not.toHaveBeenCalled()
+  })
+
+  it('有 base URL 但没有对应 Key 时两个文件都不写', async () => {
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: KEY1 }))
+    readRefs.mockResolvedValue({})
+    readCustom.mockResolvedValue(customOf())
+    const fakes = build()
+    const files = filesOf(fakes)
+    await makeProvisioner(fakes).create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    expect(files.size).toBe(0)
+    expect(fakes.calls.seedCredentials).not.toHaveBeenCalled()
+    expect(fakes.calls.seedPatch).not.toHaveBeenCalled()
+  })
+
+  it('有 base URL 和无关的 DeepSeek Key、但没有 CLIPROXY Key 时只写凭据', async () => {
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ storageKey: KEY1 }))
+    readRefs.mockResolvedValue({ DEEPSEEK_API_KEY: ALPHA })
+    readCustom.mockResolvedValue(customOf())
+    const fakes = build()
+    const files = filesOf(fakes)
+    await makeProvisioner(fakes).create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
+    expect(fakes.calls.seedPatch).not.toHaveBeenCalled()
+  })
+
+  it('文件已在则不覆盖；restart / start / 换镜像 / 回滚不再写', async () => {
+    const files = new Map<string, Buffer>([
+      [`${KEY1}/.credentials.yaml`, Buffer.from('user-credentials')],
+      [`${KEY1}/profiles/web/cordis.patch.yml`, Buffer.from('user-patch')],
+    ])
+    vi.mocked(createInstanceRecord).mockResolvedValue(row({ id: 'i-ws1', slug: 'ws1', storageKey: KEY1 }))
+    readRefs.mockResolvedValue({ CLIPROXY_API_KEY: ALPHA })
+    readCustom.mockResolvedValue(customOf())
+    const fakes = build()
+    fakes.calls.seedCredentials.mockImplementation(async (key: string, contents: Buffer) => {
+      const id = `${key}/.credentials.yaml`
+      if (files.has(id)) return false
+      files.set(id, Buffer.from(contents))
+      return true
+    })
+    fakes.calls.seedPatch.mockImplementation(async (key: string, contents: Buffer) => {
+      const id = `${key}/profiles/web/cordis.patch.yml`
+      if (files.has(id)) return false
+      files.set(id, Buffer.from(contents))
+      return true
+    })
+    const provisioner = makeProvisioner(fakes)
+    await provisioner.create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toBe('user-credentials')
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('user-patch')
+
+    const seeds = fakes.calls.seedCredentials.mock.calls.length
+    const patches = fakes.calls.seedPatch.mock.calls.length
+    findById.mockImplementation(async (_db, id) => {
+      if (id === 'i-ws1') {
+        return row({
+          id,
+          slug: 'ws1',
+          ownerId: 'u1',
+          storageKey: KEY1,
+          status: 'running',
+          image: 'dsh-instance:0.1.0_1',
+          previousImage: 'dsh-instance:0.1.0_1',
+        })
+      }
+      return undefined
+    })
+    await provisioner.restart('i-ws1')
+    await provisioner.start('i-ws1')
+    await provisioner.setImage('i-ws1', NEW_IMAGE)
+    await provisioner.rollbackImage('i-ws1')
+    expect(fakes.calls.seedCredentials.mock.calls.length).toBe(seeds)
+    expect(fakes.calls.seedPatch.mock.calls.length).toBe(patches)
+    expect(files.get(`${KEY1}/.credentials.yaml`)?.toString('utf8')).toBe('user-credentials')
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('user-patch')
+  })
+
+  it('三钉：新工作区用当时的默认；工作区自改不回写；改默认不覆盖旧卷', async () => {
+    const defaults = {
+      refs: { CLIPROXY_API_KEY: ALPHA } as Record<string, string>,
+      modelIds: [] as string[],
+      baseUrl: CUSTOM_URL,
+    }
+    readRefs.mockImplementation(async () => ({ ...defaults.refs }))
+    readCustom.mockImplementation(async () => customOf(defaults.modelIds))
+    let n = 0
+    const keys = [KEY1, KEY2, KEY3]
+    vi.mocked(createInstanceRecord).mockImplementation(async (_db, input) => {
+      const storageKey = keys[n] ?? KEY1
+      n += 1
+      return row({ id: `i-${input.slug}`, slug: input.slug, ownerId: input.ownerId, storageKey })
+    })
+    const fakes = build()
+    const files = filesOf(fakes)
+    const provisioner = makeProvisioner(fakes)
+
+    await provisioner.create({ slug: 'ws1', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toContain(PLACEHOLDER)
+    files.set(`${KEY1}/profiles/web/cordis.patch.yml`, Buffer.from('local-url'))
+    files.set(`${KEY1}/.credentials.yaml`, Buffer.from('local-key'))
+    const reads = readRefs.mock.calls.length
+    findById.mockResolvedValue(row({
+      id: 'i-ws1', slug: 'ws1', ownerId: 'u1', storageKey: KEY1, status: 'stopped', containerId: null,
+    }))
+    await provisioner.restart('i-ws1')
+    expect(readRefs.mock.calls.length).toBe(reads)
+    expect(readCustom.mock.calls.length).toBe(reads)
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('local-url')
+    expect(defaults.refs).toEqual({ CLIPROXY_API_KEY: ALPHA })
+
+    await provisioner.create({ slug: 'ws2', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY2}/.credentials.yaml`)?.toString('utf8')).toContain(ALPHA)
+    expect(files.get(`${KEY2}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toContain(CUSTOM_URL)
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('local-url')
+
+    defaults.refs = { CLIPROXY_API_KEY: BETA }
+    defaults.baseUrl = 'https://example.test/v2'
+    readCustom.mockImplementation(async () => ({ ...customOf(), baseUrl: defaults.baseUrl }))
+    await provisioner.restart('i-ws1')
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('local-url')
+    expect(files.get(`${KEY2}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toContain(CUSTOM_URL)
+    await provisioner.create({ slug: 'ws3', ownerId: 'u1', ...quota })
+    expect(files.get(`${KEY3}/.credentials.yaml`)?.toString('utf8')).toContain(BETA)
+    expect(files.get(`${KEY3}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toContain('https://example.test/v2')
+    expect(files.get(`${KEY1}/profiles/web/cordis.patch.yml`)?.toString('utf8')).toBe('local-url')
+    expect(files.get(`${KEY2}/profiles/web/cordis.patch.yml`)?.toString('utf8')).not.toContain('/v2')
   })
 })

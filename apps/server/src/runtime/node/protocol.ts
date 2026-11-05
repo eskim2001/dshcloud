@@ -48,6 +48,11 @@ export const NodeRequestSchema = z.discriminatedUnion('method', [
     z.string().regex(/^[a-f0-9]{32}$/u),
     z.string().min(1).max(8192),
   ]) }).strict(),
+  // 路径固定为 profiles/web/cordis.patch.yml，不从参数收，避免变成通用写卷。
+  z.object({ method: z.literal('seedCordisPatchIfAbsent'), args: z.tuple([
+    z.string().regex(/^[a-f0-9]{32}$/u),
+    z.string().min(1).max(8192),
+  ]) }).strict(),
   z.object({ method: z.literal('heal'), args: empty }).strict(),
 ])
 export type NodeRequest = z.infer<typeof NodeRequestSchema>

@@ -374,6 +374,19 @@ export interface AdminUser {
     providerRefs: string[]
     updatedAt: string | null
   }
+  /** base URL 与对应 Key 都在。不含明文。 */
+  customModelConfigured: boolean
+  /** 非密字段。没有配置行时为 null。 */
+  customModel: {
+    providerId: string
+    displayName: string | null
+    baseUrl: string
+    api: string
+    apiKeyEnv: string
+    modelIds: string[]
+    keyConfigured: boolean
+    updatedAt: string | null
+  } | null
 }
 
 export interface AdminInstance {
@@ -478,6 +491,30 @@ export async function clearUserModelCredentials(
   id: string,
 ): Promise<{ modelCredentials: AdminUser['modelCredentials'] }> {
   return request(`/api/admin/users/${id}/model-credentials`, { method: 'DELETE' })
+}
+
+export async function putUserCustomModel(
+  id: string,
+  body: {
+    baseUrl: string
+    apiKey?: string | null
+    providerId?: string
+    displayName?: string | null
+    api?: string
+    apiKeyEnv?: string
+    modelIds?: string[]
+  },
+): Promise<{ customModelConfigured: boolean; customModel: AdminUser['customModel'] }> {
+  return request(`/api/admin/users/${id}/custom-model`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function clearUserCustomModel(
+  id: string,
+): Promise<{ customModelConfigured: boolean; customModel: AdminUser['customModel'] }> {
+  return request(`/api/admin/users/${id}/custom-model`, { method: 'DELETE' })
 }
 
 /** 授予 / 撤销管理员。最后一名管理员不能降级（后端 400）。 */

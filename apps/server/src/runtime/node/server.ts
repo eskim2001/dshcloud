@@ -84,6 +84,8 @@ async function dispatch(driver: RuntimeDriver, request: NodeRequest): Promise<un
     case 'copyStorage': return driver.copyStorage(...request.args)
     case 'seedCredentialsFileIfAbsent':
       return driver.seedCredentialsFileIfAbsent(request.args[0], Buffer.from(request.args[1], 'utf8'))
+    case 'seedCordisPatchIfAbsent':
+      return driver.seedCordisPatchIfAbsent(request.args[0], Buffer.from(request.args[1], 'utf8'))
     case 'heal': return driver.heal()
     case 'openImagePull': throw new Error('Streaming operation requires stream transport')
   }

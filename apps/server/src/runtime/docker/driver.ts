@@ -22,7 +22,9 @@ import {
   updateProjectQuota,
   type StoragePool,
 } from '../../instance/pool.js'
+import { CORDIS_PATCH_MODE, CORDIS_PATCH_RELATIVE_PATH } from '../../model-credentials/custom-model.js'
 import { singleFileTar } from './single-file-tar.js'
+import { VOLUME_SEED_PREPARE_SCRIPT } from './volume-seed-script.js'
 import {
   StorageExistsError,
   StorageNotFoundError,
@@ -320,12 +322,65 @@ export class DockerDriver implements RuntimeDriver {
       throw new Error('模型凭据文档大小不合法')
     }
     if (!LIVE_STORAGE_KEY.test(key)) throw new Error('只能往实例数据卷写入模型凭据')
+    return this.seedVolumeFileIfAbsent(key, CREDENTIALS_FILE, contents, 0o600, '写入模型凭据失败')
+  }
+
+  /**
+   * 只写 `profiles/web/cordis.patch.yml`，而且只在它还不存在的时候写。
+   * 父目录一并创建。不读已有 patch，也不接受其它相对路径。
+   */
+  async seedCordisPatchIfAbsent(key: string, contents: Buffer): Promise<boolean> {
+    if (contents.length === 0 || contents.length > MAX_CREDENTIALS_BYTES) {
+      throw new Error('自定义模型补丁大小不合法')
+    }
+    if (!LIVE_STORAGE_KEY.test(key)) throw new Error('只能往实例数据卷写入自定义模型')
+    return this.seedVolumeFileIfAbsent(
+      key,
+      CORDIS_PATCH_RELATIVE_PATH,
+      contents,
+      CORDIS_PATCH_MODE,
+      '写入自定义模型失败',
+    )
+  }
+
+  /**
+   * 两条种子文件共用：路径白名单、if-absent、池化 `wx` 与命名卷 tar。
+   * 嵌套路径的父目录必须是真实目录；符号链接直接拒绝，避免写出卷外。
+   */
+  private async seedVolumeFileIfAbsent(
+    key: string,
+    relativePath: string,
+    contents: Buffer,
+    mode: number,
+    failure: string,
+  ): Promise<boolean> {
+    if (!isVolumeSeedPath(relativePath, mode)) throw new Error(failure)
     await this.assertStorageStopped(key)
-    if (!this.enforced) return this.seedNamedVolumeCredentials(key, contents)
+    if (!this.enforced) return this.seedNamedVolumeFile(key, relativePath, contents, mode, failure)
 
     assertStorageKey(key)
     await this.ensureStorage(key)
-    const path = join(this.dirOf(key), CREDENTIALS_FILE)
+    const root = this.dirOf(key)
+    const parts = relativePath.split('/')
+    let current = root
+    for (const part of parts.slice(0, -1)) {
+      current = join(current, part)
+      let existing: Awaited<ReturnType<typeof lstat>> | undefined
+      try {
+        existing = await lstat(current)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      if (existing !== undefined) {
+        if (existing.isSymbolicLink() || !existing.isDirectory()) throw new Error(failure)
+      } else {
+        await mkdir(current, { mode: 0o750 })
+        await chmod(current, 0o750)
+      }
+    }
+    const fileName = parts[parts.length - 1]
+    if (fileName === undefined) throw new Error(failure)
+    const path = join(current, fileName)
     try {
       await lstat(path)
       return false
@@ -333,12 +388,12 @@ export class DockerDriver implements RuntimeDriver {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
     try {
-      await writeFile(path, contents, { flag: 'wx', mode: 0o600 })
+      await writeFile(path, contents, { flag: 'wx', mode })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
       throw error
     }
-    await chmod(path, 0o600)
+    await chmod(path, mode)
     return true
   }
 
@@ -785,10 +840,17 @@ export class DockerDriver implements RuntimeDriver {
   }
 
   /**
-   * 命名卷上看不见宿主路径。先问文件在不在（退出码，不把内容打出来），
-   * 不在才把 tar 解进去。已经存在就原样留下，连 chmod 都不做。
+   * 命名卷上看不见宿主路径。先让准备脚本建好父目录并确认目标不存在（退出码，不把内容打出来），
+   * 不在才把单文件 tar 解进对应目录。已经存在就原样留下，连 chmod 都不做。
+   * 嵌套路径（`profiles/web/cordis.patch.yml`）解到子目录，tar 成员本身仍是文件名。
    */
-  private async seedNamedVolumeCredentials(key: string, contents: Buffer): Promise<boolean> {
+  private async seedNamedVolumeFile(
+    key: string,
+    relativePath: string,
+    contents: Buffer,
+    mode: number,
+    failure: string,
+  ): Promise<boolean> {
     if (!(await this.volumeExists(key))) {
       throw new StorageNotFoundError(`数据卷 ${key} 不存在`)
     }
@@ -805,20 +867,26 @@ export class DockerDriver implements RuntimeDriver {
     })
     try {
       await container.start()
-      const target = `${HELPER_MOUNT}/${CREDENTIALS_FILE}`
-      const exists = await this.helperExecCode(container, [
-        'sh', '-c', 'if [ -e "$1" ] || [ -L "$1" ]; then exit 3; fi; exit 0', 'sh', target,
+      const prepared = await this.helperExecCode(container, [
+        'sh', '-c', VOLUME_SEED_PREPARE_SCRIPT, 'sh', HELPER_MOUNT, relativePath,
       ])
-      if (exists === 3) return false
-      if (exists !== 0) throw new Error('写入模型凭据失败')
-      const archive = singleFileTar(CREDENTIALS_FILE, contents, 0o600, INSTANCE_UID, INSTANCE_GID)
+      if (prepared === 3) return false
+      if (prepared !== 0) throw new Error(failure)
+      const slash = relativePath.lastIndexOf('/')
+      const fileName = slash === -1 ? relativePath : relativePath.slice(slash + 1)
+      const archiveRoot = slash === -1 ? HELPER_MOUNT : `${HELPER_MOUNT}/${relativePath.slice(0, slash)}`
+      const archive = singleFileTar(fileName, contents, mode, INSTANCE_UID, INSTANCE_GID)
       try {
-        await container.putArchive(archive, { path: HELPER_MOUNT })
+        await container.putArchive(archive, { path: archiveRoot })
       } catch {
-        throw new Error('写入模型凭据失败')
+        throw new Error(failure)
       }
-      const mode = await this.helperExecCode(container, ['chmod', '0600', target])
-      if (mode !== 0) throw new Error('写入模型凭据失败')
+      const applied = await this.helperExecCode(container, [
+        'chmod',
+        mode.toString(8).padStart(4, '0'),
+        `${HELPER_MOUNT}/${relativePath}`,
+      ])
+      if (applied !== 0) throw new Error(failure)
       return true
     } finally {
       await container.remove({ force: true }).catch(() => undefined)
@@ -883,6 +951,11 @@ const HELPER_TARGET = '/_dst'
 const CREDENTIALS_FILE = '.credentials.yaml'
 const MAX_CREDENTIALS_BYTES = 8192
 const LIVE_STORAGE_KEY = /^[a-f0-9]{32}$/
+
+function isVolumeSeedPath(relativePath: string, mode: number): boolean {
+  return (relativePath === CREDENTIALS_FILE && mode === 0o600) ||
+    (relativePath === CORDIS_PATCH_RELATIVE_PATH && mode === CORDIS_PATCH_MODE)
+}
 
 /**
  * 递归改属主的脚本。**两条路径共用一份**（挂载点不同，行为要一模一样）。

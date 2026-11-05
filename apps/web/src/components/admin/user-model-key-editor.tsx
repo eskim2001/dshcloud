@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge.js'
 import { Button } from '@/components/ui/button.js'
 import { Input } from '@/components/ui/input.js'
-import { clearUserModelCredentials, putUserModelCredentials } from '@/lib/api.js'
+import { putUserModelCredentials } from '@/lib/api.js'
 import { errorTextOf } from '@/lib/error-text.js'
 import { keys } from '@/lib/query-keys.js'
 
@@ -12,7 +12,8 @@ import { keys } from '@/lib/query-keys.js'
  * 管理员给这个用户设默认模型 Key。
  *
  * 输入框始终从空开始：服务端不回明文。保存成功后清掉，避免明文留在表单里。
- * 这里改的是用户级默认，只会被之后新建的工作空间带上。
+ * 这里改的是用户级默认里的官方 DeepSeek Key，只会被之后新建的工作空间带上。
+ * 清除只拿掉这一把 ref，不动自定义通道的 Key。
  */
 export function UserModelKeyEditor({
   userId,
@@ -40,7 +41,7 @@ export function UserModelKeyEditor({
     onError: (err) => setError(errorTextOf(err, t('admin.actionFailed'))),
   })
   const clear = useMutation({
-    mutationFn: () => clearUserModelCredentials(userId),
+    mutationFn: () => putUserModelCredentials(userId, { refs: { DEEPSEEK_API_KEY: null } }),
     onSuccess: async () => {
       setDraft('')
       setError(null)

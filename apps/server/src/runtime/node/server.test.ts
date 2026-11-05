@@ -89,6 +89,33 @@ describe('node service policy', () => {
     } finally { await app.close() }
   })
 
+  it('拒绝把 cordis patch 写进快照卷，失败响应也不回显正文', async () => {
+    const marker = 'https://example.test/v1'
+    expect(() => parseNodeRequest({
+      method: 'seedCordisPatchIfAbsent',
+      args: [`${key}.prev`, '- id: llm-pi-ai\n'],
+    }, repo)).toThrow()
+    expect(() => parseNodeRequest({
+      method: 'seedCordisPatchIfAbsent',
+      args: [key, 'x'.repeat(8193)],
+    }, repo)).toThrow()
+    const app = createNodeService({
+      seedCordisPatchIfAbsent: async () => {
+        throw new Error(`leaked ${marker}`)
+      },
+    } as unknown as RuntimeDriver, repo)
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/runtime',
+        payload: { method: 'seedCordisPatchIfAbsent', args: [key, `- id: llm-pi-ai\n  baseURL: ${marker}\n`] },
+      })
+      expect(response.statusCode).toBe(500)
+      expect(response.body).not.toContain(marker)
+      expect(response.json()).toEqual({ error: 'node-operation-failed' })
+    } finally { await app.close() }
+  })
+
   it('rejects a context image substitution', () => {
     const raw = createRequest()
     Object.assign(raw.args[1]!, { baseImage: 'evil.example/image:latest' })

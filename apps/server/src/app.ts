@@ -44,6 +44,7 @@ import {
   newInviteToken,
 } from './invitation.js'
 import { createUserWithPassword } from './account.js'
+import { applyUserCustomModel, clearUserCustomModel } from './model-credentials/custom-model-repo.js'
 import { applyUserModelCredentials, clearUserModelCredentials } from './model-credentials/repo.js'
 import { demoAccount, isPlatformHost, trustedOrigins, type Env } from './env.js'
 import { EMPTY_USER_RESOURCE_QUOTAS } from './platform-caps.js'
@@ -358,6 +359,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     putModelCredentials: (userId, adminId, refs) =>
       applyUserModelCredentials(deps.db, deps.env.PLATFORM_SECRET, userId, adminId, refs),
     clearModelCredentials: (userId) => clearUserModelCredentials(deps.db, userId),
+    putCustomModel: (userId, adminId, body) =>
+      applyUserCustomModel(deps.db, deps.env.PLATFORM_SECRET, userId, adminId, body),
+    clearCustomModel: (userId) => clearUserCustomModel(deps.db, userId),
     setRole: async (userId, role) => {
       const target = await findUserById(deps.db, userId)
       if (target === undefined) return 'missing'

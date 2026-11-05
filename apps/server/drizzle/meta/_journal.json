@@ -113,6 +113,13 @@
       "when": 1793838811956,
       "tag": "0015_user_model_credential",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793846527927,
+      "tag": "0016_user_model_provider",
+      "breakpoints": true
     }
   ]
 }

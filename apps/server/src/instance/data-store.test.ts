@@ -25,7 +25,25 @@ describe('凭据文件只在不存在时写', () => {
     expect(names.filter((name) => name.toLowerCase().includes('credential'))).toEqual([
       'seedCredentialsFileIfAbsent',
     ])
-    expect(names.some((name) => /read/i.test(name) && /credential/i.test(name))).toBe(false)
+    expect(names.some((name) => /read/i.test(name) && /credential|cordis|patch/i.test(name))).toBe(false)
+  })
+
+  it('cordis patch 不存在才写，已存在不覆盖，且没有读接口', async () => {
+    const files = new Map<string, Buffer>()
+    const store = new DataStore({ driver: {
+      seedCordisPatchIfAbsent: async (key: string, contents: Buffer) => {
+        const id = `${key}/profiles/web/cordis.patch.yml`
+        if (files.has(id)) return false
+        files.set(id, Buffer.from(contents))
+        return true
+      },
+    } as unknown as RuntimeDriver })
+    const body = Buffer.from('- id: llm-pi-ai\n  config: {}\n')
+    expect(await store.seedCordisPatchIfAbsent('vol', body)).toBe(true)
+    files.set('vol/profiles/web/cordis.patch.yml', Buffer.from('user-edited'))
+    expect(await store.seedCordisPatchIfAbsent('vol', Buffer.from('- id: llm-pi-ai\n  config: { replaced: true }\n'))).toBe(false)
+    expect(files.get('vol/profiles/web/cordis.patch.yml')?.toString('utf8')).toBe('user-edited')
+    expect(Object.getOwnPropertyNames(DataStore.prototype)).toContain('seedCordisPatchIfAbsent')
   })
 })
 

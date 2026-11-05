@@ -1,10 +1,11 @@
-import { Readable } from 'node:stream'
+import { Readable, Writable } from 'node:stream'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { AccountExistsError } from '../account.js'
 import type { Env } from '../env.js'
 import { RegistryError } from '../instance/image-sync.js'
 import { ImageRejectedError, NoRollbackError } from '../instance/provisioner.js'
+import { CustomModelRejectedError } from '../model-credentials/custom-model.js'
 import { registerAdminRoutes, type AdminRouteDeps } from './admin-routes.js'
 
 const env = {
@@ -45,6 +46,8 @@ const EXPECTED_ROUTES = [
   { method: 'PATCH', url: '/api/admin/users/:id/role' },
   { method: 'PUT', url: '/api/admin/users/:id/model-credentials' },
   { method: 'DELETE', url: '/api/admin/users/:id/model-credentials' },
+  { method: 'PUT', url: '/api/admin/users/:id/custom-model' },
+  { method: 'DELETE', url: '/api/admin/users/:id/custom-model' },
   { method: 'PATCH', url: '/api/admin/instances/:id/quota' },
   { method: 'GET', url: '/api/admin/instances/:id/image' },
   { method: 'PATCH', url: '/api/admin/instances/:id/image' },
@@ -79,8 +82,9 @@ const call = (app: FastifyInstance, route: CollectedRoute) =>
 async function build(
   session: { id: string; role: string } | undefined,
   over: Partial<AdminRouteDeps> = {},
+  logger?: { level: 'error'; stream: Writable },
 ) {
-  const app = Fastify()
+  const app = logger === undefined ? Fastify() : Fastify({ disableRequestLogging: true, logger })
   const routes: CollectedRoute[] = []
   app.addHook('onRoute', (route) => {
     const methods = Array.isArray(route.method) ? route.method : [route.method]
@@ -129,6 +133,8 @@ async function build(
     createUser: async (input) => ({ id: 'created', email: input.email }),
     putModelCredentials: async () => ({ configured: false, providerRefs: [], updatedAt: null }),
     clearModelCredentials: async () => ({ configured: false, providerRefs: [], updatedAt: null }),
+    putCustomModel: async () => ({ customModelConfigured: false, customModel: null }),
+    clearCustomModel: async () => ({ customModelConfigured: false, customModel: null }),
     // 邀请：默认能生成。用例自己覆盖「邮箱已存在 / 已有待接受邀请」
     createInvite: async () => ({
       ok: true as const,
@@ -183,6 +189,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     const createUser = vi.fn(async (input: { email: string }) => ({ id: 'created', email: input.email }))
     const putModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [] as string[], updatedAt: null }))
     const clearModelCredentials = vi.fn(async () => ({ configured: false, providerRefs: [] as string[], updatedAt: null }))
+    const putCustomModel = vi.fn(async () => ({ customModelConfigured: false, customModel: null }))
+    const clearCustomModel = vi.fn(async () => ({ customModelConfigured: false, customModel: null }))
     const { app } = await build(USER, {
       ban,
       setQuota,
@@ -198,6 +206,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
       createUser,
       putModelCredentials,
       clearModelCredentials,
+      putCustomModel,
+      clearCustomModel,
     })
     for (const route of ATTACKS) {
       await call(app, route)
@@ -216,6 +226,8 @@ describe('平台管理面：每条路由都必须过 admin 钩子', () => {
     expect(createUser).not.toHaveBeenCalled()
     expect(putModelCredentials).not.toHaveBeenCalled()
     expect(clearModelCredentials).not.toHaveBeenCalled()
+    expect(putCustomModel).not.toHaveBeenCalled()
+    expect(clearCustomModel).not.toHaveBeenCalled()
   })
 
   it('普通账号不能用请求体和身份头把自己提升为管理员', async () => {
@@ -337,6 +349,8 @@ describe('平台管理面：管理员路径', () => {
           createdAt: new Date(0),
           modelCredentialsConfigured: false,
           modelCredentials: { configured: false, providerRefs: [], updatedAt: null },
+          customModelConfigured: false,
+          customModel: null,
         },
       ],
     })
@@ -1026,6 +1040,8 @@ describe('用户级模型凭据', () => {
             providerRefs: ['DEEPSEEK_API_KEY'],
             updatedAt: new Date(0),
           },
+          customModelConfigured: false,
+          customModel: null,
         },
       ],
     })
@@ -1109,5 +1125,158 @@ describe('用户级模型凭据', () => {
       method: 'DELETE',
       url: '/api/admin/users/nobody/model-credentials',
     })).statusCode).toBe(404)
+  })
+})
+
+const FIXTURE_URL = 'https://example.test/v1'
+
+describe('用户默认 Custom 模型', () => {
+  const saved = {
+    customModelConfigured: true,
+    customModel: {
+      providerId: 'cliproxy',
+      displayName: 'CLIProxyAPI',
+      baseUrl: FIXTURE_URL,
+      api: 'openai-completions',
+      apiKeyEnv: 'CLIPROXY_API_KEY',
+      modelIds: [] as string[],
+      keyConfigured: true,
+      updatedAt: new Date(0),
+    },
+  }
+
+  it('PUT 回显非密字段，响应和 GET 都不含明文 Key', async () => {
+    const putCustomModel = vi.fn(async () => saved)
+    const { app } = await build(ADMIN, {
+      putCustomModel,
+      listUsers: async () => [
+        {
+          id: 'u-x',
+          email: 'ada@example.com',
+          name: 'Ada',
+          role: 'user',
+          banned: false,
+          banReason: null,
+          instanceQuota: null,
+          cpuQuota: null,
+          memoryMbQuota: null,
+          pidsQuota: null,
+          diskMbQuota: null,
+          instanceCount: 0,
+          createdAt: new Date(0),
+          modelCredentialsConfigured: true,
+          modelCredentials: {
+            configured: true,
+            providerRefs: ['CLIPROXY_API_KEY', 'DEEPSEEK_API_KEY'],
+            updatedAt: new Date(0),
+          },
+          customModelConfigured: true,
+          customModel: {
+            ...saved.customModel,
+            updatedAt: new Date(0),
+          },
+        },
+      ],
+    })
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/u-x/custom-model',
+      payload: {
+        baseUrl: FIXTURE_URL,
+        apiKey: FIXTURE_KEY,
+        providerId: 'cliproxy',
+        displayName: 'CLIProxyAPI',
+        api: 'openai-completions',
+        apiKeyEnv: 'CLIPROXY_API_KEY',
+        modelIds: [],
+      },
+    })
+    expect(put.statusCode).toBe(200)
+    expect(put.body).not.toContain(FIXTURE_KEY)
+    expect(put.body).toContain(FIXTURE_URL)
+    expect(put.json().customModel.keyConfigured).toBe(true)
+    expect(put.json().customModel.baseUrl).toBe(FIXTURE_URL)
+    expect(putCustomModel).toHaveBeenCalledWith('u-x', ADMIN.id, {
+      baseUrl: FIXTURE_URL,
+      apiKey: FIXTURE_KEY,
+      providerId: 'cliproxy',
+      displayName: 'CLIProxyAPI',
+      api: 'openai-completions',
+      apiKeyEnv: 'CLIPROXY_API_KEY',
+      modelIds: [],
+    })
+
+    const listed = await app.inject({ method: 'GET', url: '/api/admin/users' })
+    expect(listed.body).not.toContain(FIXTURE_KEY)
+    expect(listed.json().users[0].customModelConfigured).toBe(true)
+    expect(listed.json().users[0].customModel.baseUrl).toBe(FIXTURE_URL)
+    expect(listed.json().users[0].customModel.keyConfigured).toBe(true)
+  })
+
+  it('空 baseUrl、空 Key、非法协议和入口 token 名字都拒绝', async () => {
+    const putCustomModel = vi.fn()
+    const { app } = await build(ADMIN, { putCustomModel })
+    for (const payload of [
+      { baseUrl: '   ' },
+      { baseUrl: '' },
+      { baseUrl: FIXTURE_URL, apiKey: '' },
+      { baseUrl: FIXTURE_URL, api: 'anthropic-messages' },
+      { baseUrl: FIXTURE_URL, apiKeyEnv: 'DSH_LAUNCH_TOKEN' },
+      { baseUrl: FIXTURE_URL, extra: true },
+    ]) {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/users/u-x/custom-model',
+        payload,
+      })
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400)
+      expect(res.body).not.toContain(FIXTURE_KEY)
+    }
+    expect(putCustomModel).not.toHaveBeenCalled()
+
+    const rejected = await build(ADMIN, {
+      putCustomModel: async () => {
+        throw new CustomModelRejectedError()
+      },
+    })
+    const bad = await rejected.app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/u-x/custom-model',
+      payload: { baseUrl: 'not-a-url' },
+    })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.body).not.toContain('not-a-url')
+  })
+
+  it('DELETE 清掉 Custom 通道，失败日志不含 Key', async () => {
+    const clearCustomModel = vi.fn(async () => ({ customModelConfigured: false, customModel: null }))
+    const { app } = await build(ADMIN, { clearCustomModel })
+    const cleared = await app.inject({ method: 'DELETE', url: '/api/admin/users/u-x/custom-model' })
+    expect(cleared.statusCode).toBe(200)
+    expect(cleared.json()).toEqual({ customModelConfigured: false, customModel: null })
+    expect(cleared.body).not.toContain(FIXTURE_KEY)
+    expect(clearCustomModel).toHaveBeenCalledWith('u-x')
+
+    const lines: string[] = []
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        lines.push(String(chunk))
+        callback()
+      },
+    })
+    const logged = await build(ADMIN, {
+      putCustomModel: async () => {
+        throw new Error(`db down ${FIXTURE_KEY}`)
+      },
+    }, { level: 'error', stream })
+    const failed = await logged.app.inject({
+      method: 'PUT',
+      url: '/api/admin/users/u-x/custom-model',
+      payload: { baseUrl: FIXTURE_URL, apiKey: FIXTURE_KEY },
+    })
+    expect(failed.statusCode).toBe(500)
+    expect(failed.body).not.toContain(FIXTURE_KEY)
+    expect(lines.join('\n')).not.toContain(FIXTURE_KEY)
+    expect(lines.join('\n')).toContain('保存自定义模型失败')
   })
 })

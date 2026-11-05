@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { boolean, index, integer, pgTable, primaryKey, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, pgTable, primaryKey, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 
 // ─── better-auth 管理的表 ────────────────────────────────────────────────
 // 字段名与 better-auth 1.7 的默认 drizzle schema 一致；改这里等于改认证。
@@ -314,6 +314,33 @@ export const userModelCredential = pgTable(
   ],
 )
 
+/**
+ * 管理员为某个用户配置的默认 Custom 模型通道（非密）。
+ *
+ * 每用户至多一行。Key 不在这里：bearer 仍进 `user_model_credential`，ref 与 `api_key_env` 对齐。
+ * base URL 由管理员按用户填写，不写成全站常量。已有工作区不回读、不回写。
+ * `user_id` 级联删除；`updated_by_admin_id` 只是审计戳，管理员账号被删时置空。
+ */
+export const userModelProvider = pgTable('user_model_provider', {
+  userId: text('user_id')
+    .primaryKey()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  /** 永久 Provider ID，小写。默认 `cliproxy`。 */
+  providerId: text('provider_id').notNull(),
+  /** 空则注入时用 `CLIProxyAPI`。 */
+  displayName: text('display_name'),
+  /** 完整 URL，含协议与路径前缀。 */
+  baseUrl: text('base_url').notNull(),
+  /** MVP 只接受 `openai-completions`。 */
+  api: text('api').notNull(),
+  /** CredentialRef，须与凭据表的 provider_ref 一致。默认 `CLIPROXY_API_KEY`。 */
+  apiKeyEnv: text('api_key_env').notNull(),
+  /** 空数组表示注入占位 model id，不在这里钉死对话默认模型。 */
+  modelIds: jsonb('model_ids').$type<string[]>().notNull().default([]),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedByAdminId: text('updated_by_admin_id').references(() => user.id, { onDelete: 'set null' }),
+})
+
 export type InstanceRow = typeof instance.$inferSelect
 export type InstanceStatus = InstanceRow['status']
 export type InstanceMetricRow = typeof instanceMetric.$inferSelect
@@ -322,6 +349,7 @@ export type ImageCatalogRow = typeof imageCatalog.$inferSelect
 export type PlatformSettingRow = typeof platformSetting.$inferSelect
 export type InvitationRow = typeof invitation.$inferSelect
 export type UserModelCredentialRow = typeof userModelCredential.$inferSelect
+export type UserModelProviderRow = typeof userModelProvider.$inferSelect
 
 // Workspace credentials never contain the console session token.
 export const workspaceGrant = pgTable('workspace_grant', {

@@ -98,5 +98,12 @@ export class NodeRuntimeDriver implements RuntimeDriver {
     }
     return this.call({ method: 'seedCredentialsFileIfAbsent', args: [key, yaml] })
   }
+  seedCordisPatchIfAbsent(key: string, contents: Buffer): Promise<boolean> {
+    const yaml = contents.toString('utf8')
+    if (yaml.length === 0 || yaml.length > 8192 || contents.length !== Buffer.byteLength(yaml)) {
+      return Promise.reject(new Error('Invalid cordis patch payload'))
+    }
+    return this.call({ method: 'seedCordisPatchIfAbsent', args: [key, yaml] })
+  }
   heal(): Promise<void> { return this.call({ method: 'heal', args: [] }) }
 }

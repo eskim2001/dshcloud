@@ -1,5 +1,7 @@
 import type { Db } from '../db/client.js'
 import { decryptStoredRefs } from './crypto.js'
+import { findUserCustomModel } from './custom-model-repo.js'
+import type { CustomModelSeed } from './custom-model.js'
 import { listUserModelCredentialSecrets } from './repo.js'
 
 /**
@@ -14,4 +16,12 @@ export async function readOwnerModelRefs(
   const rows = await listUserModelCredentialSecrets(db, userId)
   if (rows.length === 0) return {}
   return decryptStoredRefs(rows, secret, userId)
+}
+
+/**
+ * 新建数据卷时读取 Custom 通道的非密字段。没有行就返回 null，调用方不要因此写 patch。
+ * 这里不碰 `.credentials.yaml`，也不打开已有工作区的 cordis patch。
+ */
+export async function readOwnerCustomModel(db: Db, userId: string): Promise<CustomModelSeed | null> {
+  return findUserCustomModel(db, userId)
 }

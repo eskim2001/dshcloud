@@ -1,8 +1,9 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import type { UserResourceQuotas } from '../platform-caps.js'
+import { projectCustomModel, type CustomModelPublic } from '../model-credentials/custom-model.js'
 import { projectModelCredentials, type ModelCredentialPublic } from '../model-credentials/view.js'
 import type { Db } from './client.js'
-import { instance, session, user, userModelCredential } from './schema.js'
+import { instance, session, user, userModelCredential, userModelProvider } from './schema.js'
 
 /**
  * 平台管理面（管理员）用到的查询。**不属于任何实例**——这些是跨实例的
@@ -32,6 +33,10 @@ export interface AdminUserRow {
   modelCredentialsConfigured: boolean
   /** configured / providerRefs / updatedAt。永不带 ciphertext。 */
   modelCredentials: ModelCredentialPublic
+  /** base URL 与对应 ref 的 Key 都在。列表用，不含明文。 */
+  customModelConfigured: boolean
+  /** 非密字段可回显。没有配置行时为 null。永不带 Key。 */
+  customModel: CustomModelPublic | null
 }
 
 export async function listUsersWithInstanceCount(db: Db): Promise<AdminUserRow[]> {
@@ -71,12 +76,30 @@ export async function listUsersWithInstanceCount(db: Db): Promise<AdminUserRow[]
     else list.push(cred)
   }
 
+  const providerRows = await db
+    .select({
+      userId: userModelProvider.userId,
+      providerId: userModelProvider.providerId,
+      displayName: userModelProvider.displayName,
+      baseUrl: userModelProvider.baseUrl,
+      api: userModelProvider.api,
+      apiKeyEnv: userModelProvider.apiKeyEnv,
+      modelIds: userModelProvider.modelIds,
+      updatedAt: userModelProvider.updatedAt,
+    })
+    .from(userModelProvider)
+  const providers = new Map(providerRows.map((row) => [row.userId, row]))
+
   return rows.map((row) => {
-    const modelCredentials = projectModelCredentials(grouped.get(row.id) ?? [])
+    const creds = grouped.get(row.id) ?? []
+    const modelCredentials = projectModelCredentials(creds)
+    const custom = projectCustomModel(providers.get(row.id), modelCredentials.providerRefs)
     return {
       ...row,
       modelCredentialsConfigured: modelCredentials.configured,
       modelCredentials,
+      customModelConfigured: custom.customModelConfigured,
+      customModel: custom.customModel,
     }
   })
 }

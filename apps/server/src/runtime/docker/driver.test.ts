@@ -69,6 +69,7 @@ function fakeDocker(opts: FakeOptions = {}) {
   let execExit = opts.execExit ?? 0
   const execs: string[][] = []
   const archives: Buffer[] = []
+  const archiveAt: string[] = []
 
   const raw = {
     listContainers: async () => opts.liveMounts ?? [],
@@ -128,7 +129,10 @@ function fakeDocker(opts: FakeOptions = {}) {
             inspect: async () => ({ ExitCode: execExit }),
           }
         },
-        putArchive: async (file: Buffer) => { archives.push(file) },
+        putArchive: async (file: Buffer, opts?: { path?: string }) => {
+          archives.push(file)
+          archiveAt.push(opts?.path ?? '')
+        },
       }
     },
   }
@@ -141,6 +145,7 @@ function fakeDocker(opts: FakeOptions = {}) {
     lastNetwork: () => lastNetwork,
     execs,
     archives,
+    archiveAt,
     setExecExit: (code: number) => { execExit = code },
   }
 }
@@ -489,14 +494,43 @@ describe('DockerDriver 的数据属主迁移', () => {
     }
   })
 
-  it('池化：chown 会扫到 .credentials.yaml', async () => {
+  it('池化：cordis patch 写入嵌套路径，0640，已存在或父级是符号链接都不覆盖', async () => {
+    const { driver, root, dir } = await pooled()
+    const body = Buffer.from('- id: llm-pi-ai\n  config:\n    providers:\n      cliproxy:\n        baseURL: https://example.test/v1\n')
+    try {
+      expect(await driver.seedCordisPatchIfAbsent(KEY, body)).toBe(true)
+      const path = join(dir, 'profiles/web/cordis.patch.yml')
+      expect((await stat(path)).mode & 0o777).toBe(0o640)
+      expect((await stat(join(dir, 'profiles'))).mode & 0o777).toBe(0o750)
+      expect(await readFile(path, 'utf8')).toBe(body.toString('utf8'))
+      expect(await driver.seedCordisPatchIfAbsent(KEY, Buffer.from('replaced\n'))).toBe(false)
+      expect(await readFile(path, 'utf8')).toBe(body.toString('utf8'))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+
+    const linked = await pooled()
+    await mkdir(join(linked.dir, 'profiles'))
+    await symlink('/tmp', join(linked.dir, 'profiles/web'))
+    try {
+      await expect(linked.driver.seedCordisPatchIfAbsent(KEY, body)).rejects.toThrow(/失败/)
+      await expect(stat('/tmp/cordis.patch.yml')).rejects.toThrow()
+    } finally {
+      await rm(linked.root, { recursive: true, force: true })
+    }
+  })
+
+  it('池化：chown 会扫到 .credentials.yaml 和 profiles', async () => {
     const { driver, root, dir } = await pooled()
     await writeFile(join(dir, '.credentials.yaml'), 'version: 1\n', { mode: 0o600 })
+    await mkdir(join(dir, 'profiles/web'), { recursive: true })
+    await writeFile(join(dir, 'profiles/web/cordis.patch.yml'), 'id: llm-pi-ai\n', { mode: 0o640 })
     const log = join(root, 'chown.log')
     try {
       await withFakeChown(log, () => driver.chownStorage(KEY, 4242, 4242))
       const lines = (await readFile(log, 'utf8')).trim().split('\n')
       expect(lines).toContain(`-hR 4242:4242 ${join(dir, '.credentials.yaml')}`)
+      expect(lines).toContain(`-hR 4242:4242 ${join(dir, 'profiles')}`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -557,6 +591,26 @@ describe('命名卷上的凭据文件', () => {
     f.setExecExit(3)
     f.archives.length = 0
     expect(await driverOf(f).seedCredentialsFileIfAbsent(KEY, Buffer.from(`version: 1\nrefs:\n  DEEPSEEK_API_KEY: fixture-model-key-beta-9f3c\nrecords: {}\n`))).toBe(false)
+    expect(f.archives).toHaveLength(0)
+  })
+
+  it('嵌套 patch 解到 profiles/web，正文不进容器参数', async () => {
+    const body = Buffer.from('- id: llm-pi-ai\n  config:\n    providers:\n      cliproxy:\n        baseURL: https://example.test/v1\n')
+    const f = fakeDocker({ volumes: [KEY] })
+    withHelperImage(f)
+    expect(await driverOf(f).seedCordisPatchIfAbsent(KEY, body)).toBe(true)
+    expect(JSON.stringify(f.lastCreate())).not.toContain('example.test')
+    expect(f.execs.some((cmd) => cmd.join(' ').includes('example.test'))).toBe(false)
+    expect(f.execs[0]?.slice(0, 2)).toEqual(['sh', '-c'])
+    expect(f.execs[0]?.at(-1)).toBe('profiles/web/cordis.patch.yml')
+    expect(f.archiveAt).toEqual(['/_src/profiles/web'])
+    expect(f.archives[0]?.includes(body)).toBe(true)
+    expect(f.execs.at(-1)?.slice(0, 3)).toEqual(['chmod', '0640', '/_src/profiles/web/cordis.patch.yml'])
+
+    f.setExecExit(3)
+    f.archives.length = 0
+    f.archiveAt.length = 0
+    expect(await driverOf(f).seedCordisPatchIfAbsent(KEY, Buffer.from('replaced\n'))).toBe(false)
     expect(f.archives).toHaveLength(0)
   })
 

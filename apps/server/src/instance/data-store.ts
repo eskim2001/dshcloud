@@ -88,6 +88,14 @@ export class DataStore {
   }
 
   /**
+   * 新建卷之后、chown 之前：`profiles/web/cordis.patch.yml` 不存在才写。
+   * 不提供读这个文件的方法——工作区里改过的 Custom 通道不能被控制面读回来。
+   */
+  async seedCordisPatchIfAbsent(storageKey: string, contents: Buffer): Promise<boolean> {
+    return this.driver.seedCordisPatchIfAbsent(storageKey, contents)
+  }
+
+  /**
    * 用量。只用于**展示**。命名卷**没有硬配额**，真正的写上限要宿主侧文件系统配额
    * （XFS project quota，见 `DockerDriver.createStorage`）来兜。**停机时也读得到** ——
    * 卷不依赖容器在跑。
