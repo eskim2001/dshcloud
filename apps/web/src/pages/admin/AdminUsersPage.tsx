@@ -101,8 +101,7 @@ export default function AdminUsersPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>{t('admin.users.user')}</TableHead>
-                  <TableHead>{t('admin.users.instances')}</TableHead>
-                  <TableHead className="hidden sm:table-cell">{t('admin.users.quota')}</TableHead>
+                  <TableHead>{t('admin.users.instancesQuota')}</TableHead>
                   <TableHead>{t('admin.users.status')}</TableHead>
                   <TableHead className="text-right">{t('admin.users.customModel')}</TableHead>
                   <TableHead className="text-right">{t('admin.users.actions')}</TableHead>
@@ -120,20 +119,36 @@ export default function AdminUsersPage() {
                       </div>
                       <div className="text-xs text-muted-foreground">{user.name}</div>
                     </TableCell>
-                    <TableCell>{user.instanceCount}</TableCell>
-                    <TableCell className="hidden sm:table-cell">
-                      <UserQuotaEditor
-                        user={user}
-                        fallback={users.data.maxInstancesPerUser}
-                        pending={quota.isPending && quota.variables?.id === user.id}
-                        onSave={(value) => quota.mutate({ id: user.id, patch: { quota: value } })}
-                      />
-                      <UserResourceCapsEditor
-                        user={user}
-                        caps={users.data.platformCaps}
-                        pending={quota.isPending && quota.variables?.id === user.id}
-                        onSave={(value) => quota.mutate({ id: user.id, patch: value })}
-                      />
+                    {/* 主行只留摘要（几个空间 · 上限几）；两套配额编辑器折进「编辑」里，
+                        否则每行摊开四个输入框，列宽被顶到错位。 */}
+                    <TableCell className="align-top">
+                      <Collapsible>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm whitespace-nowrap">
+                            {t('admin.users.spacesSummary', {
+                              count: user.instanceCount,
+                              limit: user.instanceQuota ?? users.data.maxInstancesPerUser,
+                            })}
+                          </span>
+                          <CollapsibleTrigger className="text-xs text-muted-foreground underline-offset-2 hover:underline">
+                            {t('admin.users.editQuota')}
+                          </CollapsibleTrigger>
+                        </div>
+                        <CollapsibleContent className="pt-2">
+                          <UserQuotaEditor
+                            user={user}
+                            fallback={users.data.maxInstancesPerUser}
+                            pending={quota.isPending && quota.variables?.id === user.id}
+                            onSave={(value) => quota.mutate({ id: user.id, patch: { quota: value } })}
+                          />
+                          <UserResourceCapsEditor
+                            user={user}
+                            caps={users.data.platformCaps}
+                            pending={quota.isPending && quota.variables?.id === user.id}
+                            onSave={(value) => quota.mutate({ id: user.id, patch: value })}
+                          />
+                        </CollapsibleContent>
+                      </Collapsible>
                     </TableCell>
                     <TableCell>
                       {user.banned ? (

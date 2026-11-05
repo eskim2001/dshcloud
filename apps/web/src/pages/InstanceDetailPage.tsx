@@ -6,7 +6,7 @@ import { StatusBadge } from '@/components/status-badge.js'
 import { Card } from '@/components/ui/card.js'
 import { Button } from '@/components/ui/button.js'
 import { getInstance } from '@/lib/api.js'
-import { formatMb } from '@/lib/format.js'
+import { dshVersionLabel, formatMb } from '@/lib/format.js'
 import { instanceRefetchInterval } from '@/lib/instance-status.js'
 import { keys } from '@/lib/query-keys.js'
 
@@ -40,7 +40,6 @@ export default function InstanceDetailPage() {
   }
 
   const item = instance.data
-  const version = item.image.slice(item.image.lastIndexOf(':') + 1)
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col px-6 pt-8 md:pt-10 relative z-10 pb-16">
@@ -96,7 +95,7 @@ export default function InstanceDetailPage() {
          
          <Card className="flex flex-col p-6 justify-center">
             <span className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground mb-4">{t('workspaceDetail.version')}</span>
-            <span className="text-sm font-mono text-foreground truncate" title={version}>{version}</span>
+            <span className="text-sm font-mono text-foreground truncate" title={item.image}>{dshVersionLabel(item.image)}</span>
          </Card>
 
          <Card className="flex flex-col p-6 justify-center sm:col-span-2 lg:col-span-1">

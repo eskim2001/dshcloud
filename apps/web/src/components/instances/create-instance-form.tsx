@@ -17,7 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select.js'
 import { ApiError, createInstance, listImages, listInstances, type PlatformCaps } from '@/lib/api.js'
-import { formatMb } from '@/lib/format.js'
+import { dshTagLabel, formatMb, imageTagOf } from '@/lib/format.js'
 import { invalidateInstances, keys } from '@/lib/query-keys.js'
 
 const MEMORY_MB_OPTIONS = [2048, 4096, 8192]
@@ -64,15 +64,18 @@ const FALLBACK_CAPS: PlatformCaps = {
 /** 版本下拉里「不指定」的哨兵值——Select 不接受空字符串。 */
 const DEFAULT_IMAGE = '__default__'
 
-/** 镜像引用里的 tag 部分（仓库前缀对所有版本都一样，摆出来只是噪音）。 */
-function tagOf(ref: string): string {
-  return ref.slice(ref.lastIndexOf(':') + 1)
-}
+/**
+ * 新建工作空间的**推荐版** tag —— 与 `docker/instance-image/VERSION` 保持同一份
+ * （那是发布到注册表、预热到宿主的版本）。钉在代码里是因为库里的「平台默认」
+ * 可能停在一版旧修订上；只有当推荐版真的**已上架**时才顶替默认项，否则照旧回落。
+ */
+const RECOMMENDED_IMAGE_TAG = '0.1.6-alpha.1_5'
 
 /**
  * 新建实例的表单。**弹窗一关就卸载**，所以状态活在这里而不是列表页。
  *
- * 「不选版本」是一个真实选项（用平台默认版本），不是空值——所以有个 `__default__` 哨兵。
+ * 「不选版本」是一个真实选项（优先用代码钉住的推荐版，没上架回落平台默认版本），
+ * 不是空值——所以有个 `__default__` 哨兵。
  */
 export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => void }) {
   const { t } = useTranslation()
@@ -127,6 +130,12 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
   const diskValue = diskChoices.includes(diskMb) ? diskMb : diskChoices.at(-1)
   const tiersReady = memoryValue !== undefined && cpuValue !== undefined && diskValue !== undefined
 
+  const defaultRef = images.data?.default ?? null
+  const recommendedRef =
+    images.data?.published.find((ref) => imageTagOf(ref) === RECOMMENDED_IMAGE_TAG) ?? null
+  // 「不选」实际指向的那一版：推荐版优先，其次库里的平台默认
+  const autoRef = recommendedRef ?? defaultRef
+
   const create = useMutation({
     mutationFn: () =>
       createInstance({
@@ -135,8 +144,12 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
         memoryMb: memoryValue ?? memoryMb,
         diskMb: diskValue ?? diskMb,
         pidsLimit,
-        // 没选具体版本就不带这个键，让服务端用平台默认版本（D21）
-        ...(image === DEFAULT_IMAGE ? {} : { image }),
+        // 「不选」优先显式带上推荐版；它没上架才不带键，让服务端用平台默认版本（D21）
+        ...(image === DEFAULT_IMAGE
+          ? recommendedRef === null
+            ? {}
+            : { image: recommendedRef }
+          : { image }),
       }),
     onSuccess: (instance) => {
       setSlug('')
@@ -162,19 +175,18 @@ export function CreateInstanceForm({ onCreated }: { onCreated: (id: string) => v
   }))
   const diskOptions = diskChoices.map((mb) => ({ label: formatMb(mb), value: mb }))
 
-  const defaultRef = images.data?.default ?? null
+  const autoLabel =
+    recommendedRef !== null
+      ? t('instances.versionRecommended', { version: dshTagLabel(recommendedRef) })
+      : defaultRef === null
+        ? t('instances.versionDefaultPlain')
+        : t('instances.versionDefault', { version: dshTagLabel(defaultRef) })
   const versionOptions = [
-    {
-      label:
-        defaultRef === null
-          ? t('instances.versionDefaultPlain')
-          : t('instances.versionDefault', { version: tagOf(defaultRef) }),
-      value: DEFAULT_IMAGE,
-    },
-    // 默认版本已经单列一项，不再重复出现在下面
+    { label: autoLabel, value: DEFAULT_IMAGE },
+    // 「不选」那项就是 autoRef，下面不再重复列它
     ...(images.data?.published ?? [])
-      .filter((ref) => ref !== defaultRef)
-      .map((ref) => ({ label: tagOf(ref), value: ref })),
+      .filter((ref) => ref !== autoRef)
+      .map((ref) => ({ label: dshTagLabel(ref), value: ref })),
   ]
 
   return (

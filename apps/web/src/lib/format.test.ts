@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatMb, hostOf, imageTagOf } from './format.js'
+import { dshTagLabel, dshVersionLabel, formatMb, hostOf, imageTagOf } from './format.js'
 
 describe('formatMb', () => {
   it('不到 1 GB 用 MB（四舍五入）', () => {
@@ -39,5 +39,27 @@ describe('imageTagOf', () => {
   it('带端口的 registry 不算 tag（ImageRefSchema 允许这种写法）', () => {
     expect(imageTagOf('reg.example.com:5000/dsh-instance')).toBe('reg.example.com:5000/dsh-instance')
     expect(imageTagOf('reg.example.com:5000/dsh-instance:1.0')).toBe('1.0')
+  })
+})
+
+describe('dshVersionLabel', () => {
+  it('用户面短标：dsh 前缀 + 去掉 _修订号', () => {
+    expect(dshVersionLabel('ghcr.io/eskim2001/dsh-instance:0.1.6-alpha.1_5')).toBe('dsh 0.1.6-alpha.1')
+    expect(dshVersionLabel('dsh-instance:0.1.5-rc.2_4')).toBe('dsh 0.1.5-rc.2')
+    expect(dshVersionLabel('dsh-instance:0.1.9_10')).toBe('dsh 0.1.9')
+  })
+
+  it('非发布形状的 tag 只加前缀（没有 _N 可去）', () => {
+    expect(dshVersionLabel('dsh-instance:latest')).toBe('dsh latest')
+  })
+
+  it('取不到 tag 时原样返回', () => {
+    expect(dshVersionLabel('ghcr.io/eskim2001/dsh-instance')).toBe('ghcr.io/eskim2001/dsh-instance')
+  })
+})
+
+describe('dshTagLabel', () => {
+  it('保留修订号 —— 选项里两条修订要能区分', () => {
+    expect(dshTagLabel('ghcr.io/eskim2001/dsh-instance:0.1.6-alpha.1_5')).toBe('dsh 0.1.6-alpha.1_5')
   })
 })

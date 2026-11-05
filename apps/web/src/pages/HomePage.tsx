@@ -20,9 +20,12 @@ export default function HomePage() {
     refetchInterval: (query) => listRefetchInterval(query.state.data?.instances),
   })
   
+  // 列表是 createdAt 升序（服务端定的），所以「最近」在尾部。
+  // 「继续工作」优先推**运行中**的——推一个已停止的，点「打开」还要先等它启动；
+  // 没有运行中才回落到最新建的那个。
   const recent = instances.data?.instances ?? []
-  const current = recent[0]
-  const others = recent.filter((item) => item.id !== current?.id).slice(0, 3)
+  const current = [...recent].reverse().find((item) => item.status === 'running') ?? recent.at(-1)
+  const others = recent.filter((item) => item.id !== current?.id).slice(-3).reverse()
   const name = user?.name?.split(/\s+/)[0] || user?.email.split('@')[0] || ''
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'
@@ -106,7 +109,8 @@ export default function HomePage() {
               
               <div className="relative z-10 w-full sm:w-auto mt-2 sm:mt-0">
                 <Button className="h-10 w-full sm:w-auto px-6 text-[14px] shadow-sm pointer-events-auto" render={<Link to={`/workspaces/${current.id}/open`} />} nativeButton={false}>
-                  {t('instances.open')}
+                  {/* 已停止的空间点「打开」会先启动——主按钮把后果写明，别和运行中的同名 */}
+                  {current.status === 'running' ? t('instances.open') : t('instances.openWillStart')}
                   <ArrowRightIcon className="ml-1.5 size-4" />
                 </Button>
               </div>

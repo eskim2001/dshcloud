@@ -27,11 +27,13 @@ export function UserResourceCapsEditor({
   }) => void
 }) {
   const { t } = useTranslation()
+  // 展示单位与前台统一用 GB（前台「1 GB / 10 GB」，这里曾经写 MB，同一块屏两套单位）。
+  // 存储与提交仍是 MB —— 显示层换算：÷1024 显示、×1024 回存。
   const stored = {
     cpu: user.cpuQuota === null ? '' : String(user.cpuQuota),
-    memory: user.memoryMbQuota === null ? '' : String(user.memoryMbQuota),
+    memory: user.memoryMbQuota === null ? '' : String(mbToGb(user.memoryMbQuota)),
     pids: user.pidsQuota === null ? '' : String(user.pidsQuota),
-    disk: user.diskMbQuota === null ? '' : String(user.diskMbQuota),
+    disk: user.diskMbQuota === null ? '' : String(mbToGb(user.diskMbQuota)),
   }
   const [cpu, setCpu] = useState(stored.cpu)
   const [memory, setMemory] = useState(stored.memory)
@@ -39,10 +41,10 @@ export function UserResourceCapsEditor({
   const [disk, setDisk] = useState(stored.disk)
 
   const cpuValue = parsePositive(cpu, caps.maxCpus)
-  const memoryValue = parseIntInRange(memory, 1, caps.maxMemoryMb)
+  const memoryValue = parseGbInRange(memory, 1, caps.maxMemoryMb)
   const pidsValue = parseIntInRange(pids, 1, caps.maxPids)
   // 磁盘档位本身有 128MB 下限，封顶写得更低会让创建无解。
-  const diskValue = parseIntInRange(disk, 128, caps.maxDiskMb)
+  const diskValue = parseGbInRange(disk, 128, caps.maxDiskMb)
   const valid =
     cpuValue !== undefined &&
     memoryValue !== undefined &&
@@ -52,9 +54,9 @@ export function UserResourceCapsEditor({
 
   const fields = [
     { id: 'cpu', label: t('admin.users.cpuQuota'), value: cpu, set: setCpu, placeholder: String(caps.maxCpus), step: '0.1' },
-    { id: 'memory', label: t('admin.users.memoryQuota'), value: memory, set: setMemory, placeholder: String(caps.maxMemoryMb), step: '1' },
+    { id: 'memory', label: t('admin.users.memoryQuota'), value: memory, set: setMemory, placeholder: String(mbToGb(caps.maxMemoryMb)), step: '0.5' },
     { id: 'pids', label: t('admin.users.pidsQuota'), value: pids, set: setPids, placeholder: String(caps.maxPids), step: '1' },
-    { id: 'disk', label: t('admin.users.diskQuota'), value: disk, set: setDisk, placeholder: String(caps.maxDiskMb), step: '1' },
+    { id: 'disk', label: t('admin.users.diskQuota'), value: disk, set: setDisk, placeholder: String(mbToGb(caps.maxDiskMb)), step: '0.5' },
   ] as const
 
   return (
@@ -96,6 +98,21 @@ export function UserResourceCapsEditor({
       </Button>
     </div>
   )
+}
+
+/** MB → GB 展示值：整 GB 直接给整数，非整保留两位（`1536` → `1.5`，`1500` → `1.46`）。 */
+function mbToGb(mb: number): number {
+  return Math.round((mb / 1024) * 100) / 100
+}
+
+/** 输入按 GB 读，校验与返回按 MB。空串 = 恢复平台默认；非法（含高于平台）= undefined。 */
+function parseGbInRange(raw: string, minMb: number, maxMb: number): number | null | undefined {
+  if (raw.trim() === '') return null
+  const gb = Number(raw)
+  if (!Number.isFinite(gb) || gb <= 0) return undefined
+  const mb = Math.round(gb * 1024)
+  if (mb < minMb || mb > maxMb) return undefined
+  return mb
 }
 
 /** 空串 = 恢复平台默认；非法（含高于平台）= undefined。 */

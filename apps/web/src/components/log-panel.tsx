@@ -22,6 +22,8 @@ export function LogPanel({ src }: { src: string }) {
   const { t } = useTranslation()
   const [lines, setLines] = useState<string[]>([])
   const [state, setState] = useState<LogState>('connecting')
+  /** 失败后的「重试」：+1 让 effect 重跑、重开一条 EventSource。 */
+  const [attempt, setAttempt] = useState(0)
   const preRef = useRef<HTMLPreElement>(null)
   /** 用户没往上翻时才自动滚到底，翻着看历史时别把他拽走。 */
   const stickRef = useRef(true)
@@ -68,20 +70,38 @@ export function LogPanel({ src }: { src: string }) {
       ended = true
       es.close()
     }
-  }, [src])
+  }, [src, attempt])
 
   useEffect(() => {
     const el = preRef.current
     if (el !== null && stickRef.current) el.scrollTop = el.scrollHeight
   }, [lines])
 
+  // 空占位必须跟着状态走：连接失败摆失败文案（附重试），连接中摆连接中 ——
+  // 「暂无日志输出」只在真的连上/结束了却一行都没有时出现（502 曾被当成空态）。
+  const emptyText =
+    state === 'failed'
+      ? t('instanceDetail.logFailedBody')
+      : state === 'connecting'
+        ? t('instanceDetail.logState.connecting')
+        : t('instanceDetail.logEmpty')
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>{t(`instanceDetail.logState.${state}`)}</span>
-        <Button variant="ghost" size="sm" onClick={() => setLines([])} disabled={lines.length === 0}>
-          {t('instanceDetail.logClear')}
-        </Button>
+        <span className={state === 'failed' ? 'text-destructive' : undefined}>
+          {t(`instanceDetail.logState.${state}`)}
+        </span>
+        <div className="flex items-center gap-1">
+          {state === 'failed' && (
+            <Button variant="ghost" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+              {t('instanceDetail.logRetry')}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setLines([])} disabled={lines.length === 0}>
+            {t('instanceDetail.logClear')}
+          </Button>
+        </div>
       </div>
       <pre
         ref={preRef}
@@ -92,7 +112,7 @@ export function LogPanel({ src }: { src: string }) {
         }}
         className="h-72 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap"
       >
-        {lines.length === 0 ? t('instanceDetail.logEmpty') : lines.join('\n')}
+        {lines.length === 0 ? emptyText : lines.join('\n')}
       </pre>
     </div>
   )

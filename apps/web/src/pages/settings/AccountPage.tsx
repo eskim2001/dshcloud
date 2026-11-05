@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table.js'
-import { Toggle } from '@/components/ui/toggle.js'
+import { Switch } from '@/components/ui/switch.js'
 import {
   ApiError,
   changePassword,
@@ -139,7 +139,7 @@ function ProfileCard() {
         >
           <FieldGroup className="grid max-w-2xl gap-5 sm:grid-cols-2">
             <Field>
-              <FieldLabel htmlFor="account-name">{t('login.name')}</FieldLabel>
+              <FieldLabel htmlFor="account-name">{t('settings.profile.name')}</FieldLabel>
               <Input
                 id="account-name"
                 value={name}
@@ -147,7 +147,7 @@ function ProfileCard() {
                   setName(e.target.value)
                   setSaved(false)
                 }}
-                placeholder={t('login.namePlaceholder')}
+                placeholder={t('settings.profile.namePlaceholder')}
                 maxLength={64}
               />
             </Field>
@@ -256,6 +256,10 @@ function PasswordCard() {
                   if (change.isError) change.reset()
                 }}
               />
+              {/* 规则就贴在新密码下面——先前只在提交失败时才看到「至少 8 位」 */}
+              <p className="text-xs text-muted-foreground">
+                {t('settings.account.passwordRule', { min: MIN_PASSWORD_LENGTH })}
+              </p>
             </Field>
             <Field>
               <FieldLabel htmlFor="password-confirm">
@@ -271,15 +275,25 @@ function PasswordCard() {
             </Field>
           </FieldGroup>
 
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <Toggle
-              variant="outline"
-              size="sm"
-              pressed={revokeOthers}
-              onPressedChange={setRevokeOthers}
-            >
-              {t('settings.account.revokeOthers')}
-            </Toggle>
+          {/* 「踢掉其他设备」是有副作用的开关：独立成块、写明后果，
+              不和「保存」挤在一行（先前那个已按下的 toggle 看不出是开关）。 */}
+          <div className="mt-6 flex items-center justify-between gap-4 rounded-md border border-border/80 p-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                {t('settings.account.revokeOthers')}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t('settings.account.revokeOthersHint')}
+              </p>
+            </div>
+            <Switch
+              checked={revokeOthers}
+              onCheckedChange={(checked) => setRevokeOthers(checked)}
+              aria-label={t('settings.account.revokeOthers')}
+            />
+          </div>
+
+          <div className="mt-5">
             <Button type="submit" className="h-10 px-6 text-[14px] shadow-sm" disabled={!valid || change.isPending}>
               {change.isPending ? t('common.saving') : t('common.save')}
             </Button>

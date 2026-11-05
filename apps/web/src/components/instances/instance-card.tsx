@@ -23,7 +23,7 @@ import {
 import { Field, FieldLabel } from '@/components/ui/field.js'
 import { Input } from '@/components/ui/input.js'
 import type { InstanceSummary } from '@/lib/api.js'
-import { formatMb } from '@/lib/format.js'
+import { dshVersionLabel } from '@/lib/format.js'
 import { canOpen, isTransitioning } from '@/lib/instance-status.js'
 import { cn } from '@/lib/utils.js'
 
@@ -60,8 +60,6 @@ export function InstanceCard({
     'day',
   )
 
-  const version = instance.image.slice(instance.image.lastIndexOf(':') + 1)
-
   return (
     <div className={cn("group flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 transition-colors hover:bg-muted/40", className)}>
       <div className="flex min-w-0 flex-col gap-2.5">
@@ -75,28 +73,17 @@ export function InstanceCard({
           <StatusBadge status={instance.status} statusText={instance.statusText} />
         </div>
         
+        {/* 主行只留：版本短标（完整引用进 tooltip）+ 上次使用。
+            截断 ID / 规格串 / 完整 tag 全是噪音 —— 规格在详情页，ID 没人读。 */}
         <div className="flex items-center gap-3 text-[13px] flex-wrap">
-          <div className="flex items-center gap-1 text-muted-foreground font-mono">
-            <span className="opacity-70">ID:</span>
-            <span>{instance.id.slice(0, 8)}</span>
-          </div>
-          
+          <span className="text-muted-foreground" title={instance.image}>
+            {dshVersionLabel(instance.image)}
+          </span>
+
           <div className="size-1 rounded-full bg-border" />
-          
-          <div className="flex items-center gap-1 text-muted-foreground font-mono" title={instance.image}>
-            <span>{version}</span>
-          </div>
-          
-          <div className="size-1 rounded-full bg-border" />
-          
-          <div className="flex items-center text-muted-foreground tabular-nums">
-            <span>{instance.cpus}C / {formatMb(instance.memoryMb)} RAM / {formatMb(instance.diskMb)} Disk</span>
-          </div>
-          
-          <div className="size-1 rounded-full bg-border hidden sm:block" />
-          
-          <span className="text-muted-foreground w-full sm:w-auto mt-1 sm:mt-0">
-            {t('instances.lastUsed', { defaultValue: 'Last used {{time}}', time: lastUsed })}
+
+          <span className="text-muted-foreground">
+            {t('instances.lastUsed', { time: lastUsed })}
           </span>
         </div>
 

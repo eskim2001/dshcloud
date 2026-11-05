@@ -123,7 +123,8 @@
     "pending": "Verifying…",
     "submitSignIn": "Enter Console",
     "demoAccount": "Demo account",
-    "demoFill": "Fill in"
+    "demoFill": "Fill in",
+    "invalidCredentials": "Incorrect email or password"
   },
   "setup": {
     "title": "Set up",
@@ -174,6 +175,7 @@
     "version": "Version",
     "versionDefault": "Platform default ({{version}})",
     "versionDefaultPlain": "Platform default",
+    "versionRecommended": "Recommended ({{version}})",
     "versionHint": "Which dsh build the workspace runs; the list shows every published version.",
     "versionEmpty": "No image version has been published yet — ask an admin.",
     "memory": "Memory",
@@ -201,6 +203,7 @@
     "working": "Working…",
     "more": "More actions",
     "open": "Open",
+    "openWillStart": "Open (will start)",
     "delete": "Delete",
     "deleteTitle": "Delete this workspace permanently?",
     "deleteDescription": "The container, the address and all data for “{{slug}}” are deleted for good. Just want it to stop? Use Stop — the workspace and its data stay.",
@@ -251,6 +254,8 @@
     "logTitle": "Logs",
     "logEmpty": "No log output yet",
     "logClear": "Clear",
+    "logRetry": "Retry",
+    "logFailedBody": "Could not connect to the log stream — the workspace may be unreachable. Try again.",
     "logState": {
       "connecting": "Connecting…",
       "live": "Live",
@@ -264,7 +269,9 @@
   "settings": {
     "profile": {
       "title": "Profile",
-      "description": "How your account is identified across dshcloud."
+      "description": "How your account is identified across dshcloud.",
+      "name": "Display name",
+      "namePlaceholder": "Optional"
     },
     "sessions": {
       "title": "Sessions",
@@ -295,7 +302,9 @@
       "currentPassword": "Current password",
       "newPassword": "New password",
       "confirmPassword": "Confirm new password",
+      "passwordRule": "At least {{min}} characters.",
       "revokeOthers": "Sign out other devices",
+      "revokeOthersHint": "When on, your other devices are signed out immediately and must sign in again; this device stays signed in.",
       "saved": "Saved",
       "saveFailed": "Could not save, please retry",
       "passwordTooShort": "New password must be at least {{min}} characters.",
@@ -345,6 +354,9 @@
       "user": "User",
       "total": "All users",
       "instances": "Workspaces",
+      "instancesQuota": "Workspaces · limit",
+      "spacesSummary": "{{count}} spaces · limit {{limit}}",
+      "editQuota": "Edit",
       "quota": "Limit",
       "status": "Status",
       "customModel": "Default custom model",
@@ -383,9 +395,9 @@
       "saveQuota": "Save",
       "resourceCaps": "Per-workspace resource cap",
       "cpuQuota": "CPU",
-      "memoryQuota": "Memory MB",
+      "memoryQuota": "Memory GB",
       "pidsQuota": "Processes",
-      "diskQuota": "Disk MB",
+      "diskQuota": "Disk GB",
       "resourceCapsHint": "Empty uses the platform cap. Cannot exceed the platform cap.",
       "saveResourceCaps": "Save resource cap",
       "grantAdmin": "Make admin",

@@ -34,3 +34,27 @@ export function imageTagOf(ref: string): string {
   if (at === -1 || at < ref.lastIndexOf('/')) return ref
   return ref.slice(at + 1)
 }
+
+/**
+ * 用户面版本短标：`dsh-instance:0.1.6-alpha.1_5` → `dsh 0.1.6-alpha.1`。
+ *
+ * 发布 tag 是 `<dsh版本>_<修订号>`（见 server 的 image-catalog.ts）——修订号是平台
+ * 自己的热修序号，对用户只是噪音，列表/卡片只写「dsh 0.1.6」这一层；完整引用
+ * 进详情或 tooltip。取不到 tag 时原样返回，不硬凑前缀。
+ */
+export function dshVersionLabel(ref: string): string {
+  const tag = imageTagOf(ref)
+  if (tag === ref) return ref
+  const cut = tag.lastIndexOf('_')
+  const version = cut > 0 && /^\d+$/.test(tag.slice(cut + 1)) ? tag.slice(0, cut) : tag
+  return `dsh ${version}`
+}
+
+/**
+ * 下拉选项里的版本标：`dsh 0.1.6-alpha.1_5` —— 修订号**保留**：
+ * 同一个 dsh 版本能有多条修订，省掉它两个选项就长一样了。取不到 tag 时原样返回。
+ */
+export function dshTagLabel(ref: string): string {
+  const tag = imageTagOf(ref)
+  return tag === ref ? ref : `dsh ${tag}`
+}

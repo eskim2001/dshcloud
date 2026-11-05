@@ -123,7 +123,8 @@
     "pending": "验证中…",
     "submitSignIn": "进入控制台",
     "demoAccount": "演示账号",
-    "demoFill": "填入"
+    "demoFill": "填入",
+    "invalidCredentials": "邮箱或密码不正确"
   },
   "setup": {
     "title": "初始化",
@@ -174,6 +175,7 @@
     "version": "版本",
     "versionDefault": "平台默认（{{version}}）",
     "versionDefaultPlain": "平台默认版本",
+    "versionRecommended": "推荐（{{version}}）",
     "versionHint": "新工作空间用哪一版 dsh；下拉里是平台已发布的全部版本。",
     "versionEmpty": "平台还没发布任何镜像版本，请联系管理员。",
     "memory": "内存",
@@ -200,6 +202,7 @@
     "working": "处理中…",
     "more": "更多操作",
     "open": "打开",
+    "openWillStart": "打开将启动",
     "delete": "删除",
     "deleteTitle": "永久删除工作空间？",
     "deleteDescription": "「{{slug}}」的容器、访问地址和全部数据都会被删除，无法恢复。只想让它停下来？用「停止」—— 工作空间和数据都会留着。",
@@ -250,6 +253,8 @@
     "logTitle": "日志",
     "logEmpty": "暂无日志输出",
     "logClear": "清空",
+    "logRetry": "重试",
+    "logFailedBody": "日志连接失败——可能是工作空间暂时不可达。请稍后重试。",
     "logState": {
       "connecting": "连接中…",
       "live": "实时",
@@ -263,7 +268,9 @@
   "settings": {
     "profile": {
       "title": "个人资料",
-      "description": "用于在 dshcloud 中识别你的账号。"
+      "description": "用于在 dshcloud 中识别你的账号。",
+      "name": "显示名",
+      "namePlaceholder": "可选"
     },
     "sessions": {
       "title": "会话",
@@ -294,7 +301,9 @@
       "currentPassword": "当前密码",
       "newPassword": "新密码",
       "confirmPassword": "确认新密码",
+      "passwordRule": "至少 {{min}} 位。",
       "revokeOthers": "同时让其他设备下线",
+      "revokeOthersHint": "开启后，其他已登录的设备会立即退出，需要重新输入密码；当前这台不受影响。",
       "saved": "已保存",
       "saveFailed": "保存失败，请重试",
       "passwordTooShort": "新密码至少 {{min}} 位。",
@@ -344,6 +353,9 @@
       "user": "用户",
       "total": "全部用户",
       "instances": "工作空间数",
+      "instancesQuota": "工作空间 · 上限",
+      "spacesSummary": "{{count}} 个空间 · 上限 {{limit}}",
+      "editQuota": "编辑",
       "quota": "上限",
       "status": "状态",
       "customModel": "默认自定义模型",
@@ -382,9 +394,9 @@
       "saveQuota": "保存",
       "resourceCaps": "单实例资源上限",
       "cpuQuota": "CPU",
-      "memoryQuota": "内存 MB",
+      "memoryQuota": "内存 GB",
       "pidsQuota": "进程数",
-      "diskQuota": "磁盘 MB",
+      "diskQuota": "磁盘 GB",
       "resourceCapsHint": "留空使用平台封顶，不能高于平台上限。",
       "saveResourceCaps": "保存资源上限",
       "grantAdmin": "设为管理员",

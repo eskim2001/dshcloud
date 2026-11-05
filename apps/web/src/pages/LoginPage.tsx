@@ -153,8 +153,12 @@ export default function LoginPage() {
               {mutation.isError && (
                 <Alert variant="destructive" className="py-2.5 text-xs">
                   <AlertDescription>
+                    {/* better-auth 的 message 是英文的；按 code 翻成本地文案，
+                        认不出来的码才回退到原文。 */}
                     {mutation.error instanceof ApiError
-                      ? mutation.error.message
+                      ? mutation.error.code === 'INVALID_EMAIL_OR_PASSWORD'
+                        ? t('login.invalidCredentials')
+                        : mutation.error.message
                       : t('common.requestFailed')}
                   </AlertDescription>
                 </Alert>
